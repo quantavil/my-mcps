@@ -4,14 +4,14 @@ import path from "node:path";
 export interface AgentTarget {
   name: string;
   configPath: string;
-  format: "standard" | "opencode";
+  format: "standard" | "opencode" | "toml";
   rootKey: string;
   prefix: string;
 }
 
 export function formatServerForAgent(
   serverDef: Record<string, any>,
-  format: "standard" | "opencode"
+  format: "standard" | "opencode" | "toml"
 ): Record<string, any> {
   const { description, ...cleanDef } = serverDef;
 
@@ -34,7 +34,7 @@ export function formatServerForAgent(
     return result;
   }
 
-  // Standard format (Antigravity, Claude, Cursor)
+  // Standard format (Antigravity, Claude, Cursor, Codex TOML)
   const result: Record<string, any> = {
     command: cleanDef.command,
     args: Array.isArray(cleanDef.args) ? cleanDef.args : []
@@ -52,7 +52,7 @@ export function mergeMcpConfig(
   managedServers: Record<string, any>,
   rootKey: string = "mcpServers",
   prefix: string = "managed-",
-  format: "standard" | "opencode" = "standard"
+  format: "standard" | "opencode" | "toml" = "standard"
 ): any {
   const result = { ...(existingConfig || {}) };
   const currentServers = { ...(result[rootKey] || {}) };
@@ -109,6 +109,13 @@ export function getAgentTargets(homeDir: string): AgentTarget[] {
       format: "opencode",
       rootKey: "mcp",
       prefix: "managed-"
+    },
+    {
+      name: "Codex CLI",
+      configPath: path.join(homeDir, ".codex/config.toml"),
+      format: "toml",
+      rootKey: "mcp_servers",
+      prefix: "managed-"
     }
   ];
 }
@@ -125,11 +132,17 @@ export async function deployToAgents(
       const dir = path.dirname(target.configPath);
       await fs.promises.mkdir(dir, { recursive: true });
 
-      let existing = {};
+      let existing: any = {};
+      const isToml = target.format === "toml" || target.configPath.endsWith(".toml");
+
       if (fs.existsSync(target.configPath)) {
         try {
           const raw = await fs.promises.readFile(target.configPath, "utf-8");
-          existing = JSON.parse(raw);
+          if (isToml) {
+            existing = Bun.TOML.parse(raw);
+          } else {
+            existing = JSON.parse(raw);
+          }
         } catch {
           existing = {};
         }
@@ -143,7 +156,13 @@ export async function deployToAgents(
         target.format
       );
 
-      await fs.promises.writeFile(target.configPath, JSON.stringify(merged, null, 2) + "\n");
+      if (isToml) {
+        const serialized = Bun.TOML.stringify(merged);
+        await fs.promises.writeFile(target.configPath, serialized);
+      } else {
+        await fs.promises.writeFile(target.configPath, JSON.stringify(merged, null, 2) + "\n");
+      }
+
       reports.push(`✓ ${target.name}: deployed ${Object.keys(managedServers).length} servers to ${target.configPath}`);
     } catch (err) {
       reports.push(`✗ ${target.name}: ${(err as Error).message}`);

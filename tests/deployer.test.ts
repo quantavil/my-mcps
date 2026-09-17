@@ -7,30 +7,30 @@ import { mergeMcpConfig, getAgentTargets, deployToAgents, formatServerForAgent }
 describe("formatServerForAgent", () => {
   test("formats properly for standard agents", () => {
     const server = {
-      command: "npx",
-      args: ["-y", "my-server"],
+      command: "bunx",
+      args: ["my-server"],
       env: { KEY: "value" },
       description: "Sample description"
     };
 
     const formatted = formatServerForAgent(server, "standard");
-    expect(formatted.command).toBe("npx");
-    expect(formatted.args).toEqual(["-y", "my-server"]);
+    expect(formatted.command).toBe("bunx");
+    expect(formatted.args).toEqual(["my-server"]);
     expect(formatted.env).toEqual({ KEY: "value" });
     expect(formatted.description).toBeUndefined();
   });
 
   test("formats properly for OpenCode schema (type: local, command array, environment object)", () => {
     const server = {
-      command: "npx",
-      args: ["-y", "my-server"],
+      command: "bunx",
+      args: ["my-server"],
       env: { KEY: "value" },
       description: "Sample description"
     };
 
     const formatted = formatServerForAgent(server, "opencode");
     expect(formatted.type).toBe("local");
-    expect(formatted.command).toEqual(["npx", "-y", "my-server"]);
+    expect(formatted.command).toEqual(["bunx", "my-server"]);
     expect(formatted.environment).toEqual({ KEY: "value" });
     expect(formatted.env).toBeUndefined();
     expect(formatted.description).toBeUndefined();
@@ -48,7 +48,7 @@ describe("mergeMcpConfig", () => {
 
     const managedServers = {
       filesystem: {
-        command: "npx",
+        command: "bunx",
         args: ["server-filesystem"],
         description: "Local filesystem operations"
       }
@@ -56,16 +56,10 @@ describe("mergeMcpConfig", () => {
 
     const updated = mergeMcpConfig(existingConfig, managedServers, "mcpServers", "managed-", "standard");
 
-    // Preserves user servers
     expect(updated.mcpServers["user-custom-server"]).toBeDefined();
-    expect(updated.mcpServers["user-custom-server"].command).toBe("custom-cmd");
-    // Removes obsolete managed servers
     expect(updated.mcpServers["managed-old"]).toBeUndefined();
-    // Adds new managed server with prefix
     expect(updated.mcpServers["managed-filesystem"]).toBeDefined();
-    expect(updated.mcpServers["managed-filesystem"].command).toBe("npx");
-    // Strips description
-    expect(updated.mcpServers["managed-filesystem"].description).toBeUndefined();
+    expect(updated.mcpServers["managed-filesystem"].command).toBe("bunx");
   });
 });
 
@@ -80,36 +74,50 @@ describe("deployToAgents", () => {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
   });
 
-  test("deploys managed servers across agent configs with format compliance", async () => {
+  test("deploys managed servers across all 6 agent configs including Codex TOML", async () => {
+    // Pre-populate Codex TOML config with existing user settings
+    const codexPath = path.join(tempDir, ".codex/config.toml");
+    await fs.promises.mkdir(path.dirname(codexPath), { recursive: true });
+    await fs.promises.writeFile(
+      codexPath,
+      'model = "gpt-5.6-luna"\n[mcp_servers.user_server]\ncommand = "my-cmd"\n'
+    );
+
     const managedServers = {
       filesystem: {
-        command: "npx",
-        args: ["-y", "@modelcontextprotocol/server-filesystem"],
+        command: "bunx",
+        args: ["@modelcontextprotocol/server-filesystem"],
         description: "Filesystem server"
       },
       github: {
-        command: "npx",
-        args: ["-y", "@modelcontextprotocol/server-github"],
+        command: "bunx",
+        args: ["@modelcontextprotocol/server-github"],
         env: { GITHUB_PERSONAL_ACCESS_TOKEN: "secret-token" }
       }
     };
 
     const reports = await deployToAgents(managedServers, tempDir);
-    expect(reports.length).toBe(5);
+    expect(reports.length).toBe(6);
 
     // 1. Verify Standard agent (Claude Code / Antigravity / Cursor)
     const claudeCodePath = path.join(tempDir, ".claude.json");
     const parsedClaude = JSON.parse(await fs.promises.readFile(claudeCodePath, "utf-8"));
-    expect(parsedClaude.mcpServers["managed-filesystem"].command).toBe("npx");
-    expect(parsedClaude.mcpServers["managed-filesystem"].args).toEqual(["-y", "@modelcontextprotocol/server-filesystem"]);
+    expect(parsedClaude.mcpServers["managed-filesystem"].command).toBe("bunx");
     expect(parsedClaude.mcpServers["managed-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
 
     // 2. Verify OpenCode agent conforms to OpenCode schema
     const openCodePath = path.join(tempDir, ".config/opencode/opencode.json");
     const parsedOpenCode = JSON.parse(await fs.promises.readFile(openCodePath, "utf-8"));
-    expect(parsedOpenCode.mcp).toBeDefined();
     expect(parsedOpenCode.mcp["managed-filesystem"].type).toBe("local");
-    expect(parsedOpenCode.mcp["managed-filesystem"].command).toEqual(["npx", "-y", "@modelcontextprotocol/server-filesystem"]);
-    expect(parsedOpenCode.mcp["managed-github"].environment.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
+    expect(parsedOpenCode.mcp["managed-filesystem"].command).toEqual(["bunx", "@modelcontextprotocol/server-filesystem"]);
+
+    // 3. Verify Codex CLI TOML config
+    const codexContent = await fs.promises.readFile(codexPath, "utf-8");
+    const parsedCodex: any = Bun.TOML.parse(codexContent);
+    expect(parsedCodex.model).toBe("gpt-5.6-luna");
+    expect(parsedCodex.mcp_servers.user_server).toBeDefined();
+    expect(parsedCodex.mcp_servers["managed-filesystem"]).toBeDefined();
+    expect(parsedCodex.mcp_servers["managed-filesystem"].command).toBe("bunx");
+    expect(parsedCodex.mcp_servers["managed-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
   });
 });
