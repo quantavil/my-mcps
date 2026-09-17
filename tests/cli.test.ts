@@ -8,6 +8,7 @@ import {
   runDeploy,
   runDisable,
   runEnable,
+  runList,
   runSync
 } from "../index";
 
@@ -236,6 +237,19 @@ describe("runEnable and runDisable", () => {
 
     const resNotFoundDisable = await runDisable("nonexistent", tempDir, tempHome);
     expect(resNotFoundDisable).toBe(false);
+  });
+
+  test("runList executes cleanly without throwing", async () => {
+    const servers = {
+      serverA: { command: "bunx", args: ["server-a"], description: "Server A" },
+      serverB: { command: "bunx", args: ["server-b"], enabled: false, description: "Server B" }
+    };
+    await fs.promises.writeFile(
+      path.join(tempDir, "mcp-servers.json"),
+      JSON.stringify({ servers })
+    );
+
+    await expect(runList(tempDir)).resolves.toBeUndefined();
   });
 });
 

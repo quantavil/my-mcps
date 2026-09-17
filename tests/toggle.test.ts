@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { setServerEnabled, runDeploy, runList } from "../index";
+import { setServerEnabled, runDeploy } from "../index";
 
 describe("setServerEnabled and deploy filtering", () => {
   let tempDir: string;
