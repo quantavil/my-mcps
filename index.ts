@@ -53,6 +53,42 @@ export async function setServerEnabled(
   return { success: true };
 }
 
+export async function runEnable(
+  serverName?: string,
+  rootDir: string = import.meta.dir,
+  homeDir: string = process.env.HOME || ""
+): Promise<boolean> {
+  if (!serverName) {
+    console.error("✗ Usage: ./run.sh enable <server-name>");
+    return false;
+  }
+  const res = await setServerEnabled(rootDir, serverName, true);
+  if (!res.success) {
+    console.error(`✗ ${res.error}`);
+    return false;
+  }
+  console.log(`✓ Server '${serverName}' enabled`);
+  return await runDeploy(rootDir, homeDir);
+}
+
+export async function runDisable(
+  serverName?: string,
+  rootDir: string = import.meta.dir,
+  homeDir: string = process.env.HOME || ""
+): Promise<boolean> {
+  if (!serverName) {
+    console.error("✗ Usage: ./run.sh disable <server-name>");
+    return false;
+  }
+  const res = await setServerEnabled(rootDir, serverName, false);
+  if (!res.success) {
+    console.error(`✗ ${res.error}`);
+    return false;
+  }
+  console.log(`✓ Server '${serverName}' disabled (inactive in repo, removed from agent targets)`);
+  return await runDeploy(rootDir, homeDir);
+}
+
 export async function runDeploy(
   rootDir: string = import.meta.dir,
   homeDir: string = process.env.HOME || ""
@@ -194,12 +230,14 @@ Usage:
   bun index.ts [command]
 
 Commands:
-  deploy    Interpolate secrets and deploy to agent targets (default)
-  list      Display configured servers and required secrets
-  check     Validate that all required secrets are documented in .env.example
-  test      Execute test suite via bun test
-  sync      Display upstream MCP server configuration status
-  help      Show this help message
+  deploy          Interpolate secrets and deploy to agent targets (default)
+  enable <name>   Enable an MCP server and re-deploy to agents
+  disable <name>  Disable an MCP server and re-deploy to agents
+  list            Display configured servers and required secrets
+  check           Validate that all required secrets are documented in .env.example
+  test            Execute test suite via bun test
+  sync            Display upstream MCP server configuration status
+  help            Show this help message
 `);
 }
 
@@ -209,6 +247,16 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
   switch (command) {
     case "deploy": {
       const ok = await runDeploy();
+      if (!ok) process.exit(1);
+      break;
+    }
+    case "enable": {
+      const ok = await runEnable(args[1]);
+      if (!ok) process.exit(1);
+      break;
+    }
+    case "disable": {
+      const ok = await runDisable(args[1]);
       if (!ok) process.exit(1);
       break;
     }
