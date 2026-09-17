@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/mcp-servers.json",
   "servers": {
     "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${HOME}/Documents"],
+      "command": "bunx",
+      "args": ["@modelcontextprotocol/server-filesystem", "${HOME}/Documents"],
       "description": "Local filesystem access for documents and projects"
     },
     "fetch": {
@@ -12,17 +12,25 @@
       "description": "Web page and URL content fetcher"
     },
     "memory": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "command": "bunx",
+      "args": ["@modelcontextprotocol/server-memory"],
       "description": "Knowledge graph persistent memory server"
     },
     "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "command": "bunx",
+      "args": ["@modelcontextprotocol/server-github"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
       },
       "description": "GitHub repos, issues, and PR management"
+    },
+    "firecrawl": {
+      "command": "bunx",
+      "args": ["firecrawl-mcp"],
+      "env": {
+        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
+      },
+      "description": "Web scraping, search, and markdown extraction via Firecrawl"
     }
   }
 }
