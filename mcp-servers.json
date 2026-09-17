@@ -59,6 +59,16 @@
         "jadx_mcp_server.py"
       ],
       "description": "JADX Android decompiler bridge MCP server"
+    },
+    "codebase-memory": {
+      "command": "bunx",
+      "args": ["codebase-memory-mcp"],
+      "description": "Codebase memory knowledge graph and AST analysis"
+    },
+    "blender": {
+      "command": "uvx",
+      "args": ["mcp-for-blender"],
+      "description": "Blender 3D scene creation, manipulation, and modeling MCP server"
     }
   }
 }
