@@ -26,4 +26,8 @@ cp .env.example .env
 
 # 4. Verify secrets coverage
 ./run.sh check
+
+# 5. Enable or disable servers (automatically redeploys)
+./run.sh disable <server-name>
+./run.sh enable <server-name>
 ```

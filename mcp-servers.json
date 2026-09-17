@@ -3,22 +3,31 @@
   "servers": {
     "filesystem": {
       "command": "bunx",
-      "args": ["@modelcontextprotocol/server-filesystem", "${HOME}/Documents"],
+      "args": [
+        "@modelcontextprotocol/server-filesystem",
+        "${HOME}/Documents"
+      ],
       "description": "Local filesystem access for documents and projects"
     },
     "fetch": {
       "command": "uvx",
-      "args": ["mcp-server-fetch"],
+      "args": [
+        "mcp-server-fetch"
+      ],
       "description": "Web page and URL content fetcher"
     },
     "memory": {
       "command": "bunx",
-      "args": ["@modelcontextprotocol/server-memory"],
+      "args": [
+        "@modelcontextprotocol/server-memory"
+      ],
       "description": "Knowledge graph persistent memory server"
     },
     "github": {
       "command": "bunx",
-      "args": ["@modelcontextprotocol/server-github"],
+      "args": [
+        "@modelcontextprotocol/server-github"
+      ],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
       },
@@ -26,7 +35,9 @@
     },
     "firecrawl": {
       "command": "bunx",
-      "args": ["firecrawl-mcp"],
+      "args": [
+        "firecrawl-mcp"
+      ],
       "env": {
         "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
       },
@@ -34,7 +45,9 @@
     },
     "context7": {
       "command": "bunx",
-      "args": ["@upstash/context7-mcp"],
+      "args": [
+        "@upstash/context7-mcp"
+      ],
       "env": {
         "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
       },
@@ -62,13 +75,18 @@
     },
     "codebase-memory": {
       "command": "bunx",
-      "args": ["codebase-memory-mcp"],
+      "args": [
+        "codebase-memory-mcp"
+      ],
       "description": "Codebase memory knowledge graph and AST analysis"
     },
     "blender": {
       "command": "uvx",
-      "args": ["mcp-for-blender"],
-      "description": "Blender 3D scene creation, manipulation, and modeling MCP server"
+      "args": [
+        "mcp-for-blender"
+      ],
+      "description": "Blender 3D scene creation, manipulation, and modeling MCP server",
+      "enabled": false
     }
   }
 }
