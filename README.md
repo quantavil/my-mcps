@@ -15,6 +15,10 @@ Deployments perform non-destructive merges, prefixing managed servers with `mana
 
 | Server | Description | Command | Required Secrets |
 | --- | --- | --- | --- |
+| `fetch` | Web page and URL content fetcher | `uvx mcp-server-fetch` | None |
+| `filesystem` | Local filesystem access for documents and projects | `npx -y @modelcontextprotocol/server-filesystem /home/quantavil/Documents` | None |
+| `github` | GitHub repos, issues, and PR management | `npx -y @modelcontextprotocol/server-github` | `GITHUB_PERSONAL_ACCESS_TOKEN` |
+| `memory` | Knowledge graph persistent memory server | `npx -y @modelcontextprotocol/server-memory` | None |
 
 <!-- mcp:end -->
 
