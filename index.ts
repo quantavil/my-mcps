@@ -28,6 +28,31 @@ export function extractReferencedEnvVars(servers: Record<string, any>): string[]
   return Array.from(vars).sort();
 }
 
+export async function setServerEnabled(
+  rootDir: string,
+  serverName: string,
+  enabled: boolean
+): Promise<{ success: boolean; error?: string }> {
+  const manifestPath = path.join(rootDir, "mcp-servers.json");
+  if (!fs.existsSync(manifestPath)) {
+    return { success: false, error: `Manifest file not found at ${manifestPath}` };
+  }
+  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
+  const manifest = JSON.parse(manifestRaw);
+  if (!manifest.servers || !manifest.servers[serverName]) {
+    return { success: false, error: `Server '${serverName}' not found in manifest` };
+  }
+
+  if (enabled) {
+    delete manifest.servers[serverName].enabled; // default is enabled
+  } else {
+    manifest.servers[serverName].enabled = false;
+  }
+
+  await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  return { success: true };
+}
+
 export async function runDeploy(
   rootDir: string = import.meta.dir,
   homeDir: string = process.env.HOME || ""
@@ -40,7 +65,13 @@ export async function runDeploy(
 
   const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
   const manifest = JSON.parse(manifestRaw);
-  const servers = manifest.servers || {};
+  const allServers = manifest.servers || {};
+  const activeServers: Record<string, any> = {};
+  for (const [name, def] of Object.entries(allServers)) {
+    if ((def as any).enabled !== false) {
+      activeServers[name] = def;
+    }
+  }
 
   // 1. Read .env and merge with process.env (system environment variables)
   const envPath = path.join(rootDir, ".env");
@@ -56,7 +87,7 @@ export async function runDeploy(
   };
 
   // 2. Interpolate secrets cleanly
-  const { servers: resolvedServers, missing } = interpolateSecrets(servers, mergedEnv);
+  const { servers: resolvedServers, missing } = interpolateSecrets(activeServers, mergedEnv);
   if (missing.length > 0) {
     console.warn(`⚠️  Warning: Missing secrets (omitted from deployed servers): ${missing.join(", ")}`);
   }
@@ -85,9 +116,11 @@ export async function runList(rootDir: string = import.meta.dir): Promise<void> 
   console.log("─".repeat(70));
   for (const [name, def] of Object.entries(servers)) {
     const d = def as any;
+    const isEnabled = d.enabled !== false;
+    const statusTag = isEnabled ? "\x1b[32m[enabled]\x1b[0m" : "\x1b[31m[disabled]\x1b[0m";
     const cmd = `${d.command} ${(d.args || []).join(" ")}`;
     const envKeys = d.env ? Object.keys(d.env) : [];
-    console.log(`• \x1b[1m${name}\x1b[0m: ${d.description || ""}`);
+    console.log(`• \x1b[1m${name}\x1b[0m ${statusTag}: ${d.description || ""}`);
     console.log(`  Command: ${cmd}`);
     if (envKeys.length > 0) {
       console.log(`  Secrets: ${envKeys.join(", ")}`);
