@@ -31,6 +31,14 @@
         "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
       },
       "description": "Web scraping, search, and markdown extraction via Firecrawl"
+    },
+    "context7": {
+      "command": "bunx",
+      "args": ["@upstash/context7-mcp"],
+      "env": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      },
+      "description": "Up-to-date documentation and code examples via Context7"
     }
   }
 }
