@@ -39,6 +39,26 @@
         "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
       },
       "description": "Up-to-date documentation and code examples via Context7"
+    },
+    "apktool": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${HOME}/Documents/my-mcps/servers/apktool-mcp-server",
+        "run",
+        "apktool_mcp_server.py"
+      ],
+      "description": "Android APK decoding, manifest inspection, and smali analysis via Apktool"
+    },
+    "jadx": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${HOME}/Documents/my-mcps/servers/jadx-mcp-server",
+        "run",
+        "jadx_mcp_server.py"
+      ],
+      "description": "JADX Android decompiler bridge MCP server"
     }
   }
 }
