@@ -1,0 +1,19 @@
+{
+  "name": "my-mcps",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "my-mcps": "./run.sh"
+  },
+  "scripts": {
+    "setup": "./run.sh deploy",
+    "deploy": "./run.sh deploy",
+    "check": "./run.sh check",
+    "test": "bun test",
+    "sync": "./run.sh sync"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "bun-types": "^1.4.2"
+  }
+}
