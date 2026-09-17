@@ -3,7 +3,7 @@
   "servers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/quantavil/Documents"],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${HOME}/Documents"],
       "description": "Local filesystem access for documents and projects"
     },
     "fetch": {

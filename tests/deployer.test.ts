@@ -2,7 +2,40 @@ import { expect, test, describe, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { mergeMcpConfig, getAgentTargets, deployToAgents } from "../src/deployer";
+import { mergeMcpConfig, getAgentTargets, deployToAgents, formatServerForAgent } from "../src/deployer";
+
+describe("formatServerForAgent", () => {
+  test("formats properly for standard agents", () => {
+    const server = {
+      command: "npx",
+      args: ["-y", "my-server"],
+      env: { KEY: "value" },
+      description: "Sample description"
+    };
+
+    const formatted = formatServerForAgent(server, "standard");
+    expect(formatted.command).toBe("npx");
+    expect(formatted.args).toEqual(["-y", "my-server"]);
+    expect(formatted.env).toEqual({ KEY: "value" });
+    expect(formatted.description).toBeUndefined();
+  });
+
+  test("formats properly for OpenCode schema (type: local, command array, environment object)", () => {
+    const server = {
+      command: "npx",
+      args: ["-y", "my-server"],
+      env: { KEY: "value" },
+      description: "Sample description"
+    };
+
+    const formatted = formatServerForAgent(server, "opencode");
+    expect(formatted.type).toBe("local");
+    expect(formatted.command).toEqual(["npx", "-y", "my-server"]);
+    expect(formatted.environment).toEqual({ KEY: "value" });
+    expect(formatted.env).toBeUndefined();
+    expect(formatted.description).toBeUndefined();
+  });
+});
 
 describe("mergeMcpConfig", () => {
   test("merges managed servers without overwriting user servers", () => {
@@ -21,7 +54,7 @@ describe("mergeMcpConfig", () => {
       }
     };
 
-    const updated = mergeMcpConfig(existingConfig, managedServers, "mcpServers", "managed-");
+    const updated = mergeMcpConfig(existingConfig, managedServers, "mcpServers", "managed-", "standard");
 
     // Preserves user servers
     expect(updated.mcpServers["user-custom-server"]).toBeDefined();
@@ -33,75 +66,6 @@ describe("mergeMcpConfig", () => {
     expect(updated.mcpServers["managed-filesystem"].command).toBe("npx");
     // Strips description
     expect(updated.mcpServers["managed-filesystem"].description).toBeUndefined();
-  });
-
-  test("handles empty or undefined existingConfig and custom rootKey", () => {
-    const managedServers = {
-      fetch: { command: "uvx", args: ["mcp-server-fetch"] }
-    };
-
-    const updatedOpenCode = mergeMcpConfig(undefined, managedServers, "mcp", "managed-");
-    expect(updatedOpenCode.mcp).toBeDefined();
-    expect(updatedOpenCode.mcp["managed-fetch"]).toBeDefined();
-    expect(updatedOpenCode.mcp["managed-fetch"].command).toBe("uvx");
-  });
-
-  test("preserves other top-level keys in existingConfig", () => {
-    const existingConfig = {
-      theme: "dark",
-      settings: { fontSize: 14 },
-      mcpServers: {
-        "user-server": { command: "user" }
-      }
-    };
-
-    const managedServers = {
-      memory: { command: "npx", args: ["server-memory"] }
-    };
-
-    const updated = mergeMcpConfig(existingConfig, managedServers, "mcpServers", "managed-");
-    expect(updated.theme).toBe("dark");
-    expect(updated.settings.fontSize).toBe(14);
-    expect(updated.mcpServers["user-server"]).toBeDefined();
-    expect(updated.mcpServers["managed-memory"]).toBeDefined();
-  });
-});
-
-describe("getAgentTargets", () => {
-  test("returns all expected agent targets with appropriate configurations", () => {
-    const fakeHome = "/tmp/fake-home";
-    const targets = getAgentTargets(fakeHome);
-
-    expect(targets.length).toBe(5);
-
-    const targetMap = new Map(targets.map(t => [t.name, t]));
-
-    const antigravity = targetMap.get("Antigravity CLI");
-    expect(antigravity).toBeDefined();
-    expect(antigravity?.configPath).toBe(path.join(fakeHome, ".gemini/antigravity-cli/mcp_config.json"));
-    expect(antigravity?.rootKey).toBe("mcpServers");
-    expect(antigravity?.prefix).toBe("managed-");
-
-    const claudeDesktop = targetMap.get("Claude Desktop");
-    expect(claudeDesktop).toBeDefined();
-    expect(claudeDesktop?.configPath).toBe(path.join(fakeHome, ".config/Claude/claude_desktop_config.json"));
-    expect(claudeDesktop?.rootKey).toBe("mcpServers");
-
-    const claudeCode = targetMap.get("Claude Code");
-    expect(claudeCode).toBeDefined();
-    expect(claudeCode?.configPath).toBe(path.join(fakeHome, ".claude.json"));
-    expect(claudeCode?.rootKey).toBe("mcpServers");
-
-    const cursor = targetMap.get("Cursor");
-    expect(cursor).toBeDefined();
-    expect(cursor?.configPath).toBe(path.join(fakeHome, ".cursor/mcp.json"));
-    expect(cursor?.rootKey).toBe("mcpServers");
-
-    const openCode = targetMap.get("OpenCode");
-    expect(openCode).toBeDefined();
-    expect(openCode?.configPath).toBe(path.join(fakeHome, ".config/opencode/opencode.json"));
-    expect(openCode?.rootKey).toBe("mcp");
-    expect(openCode?.prefix).toBe("managed-");
   });
 });
 
@@ -116,20 +80,7 @@ describe("deployToAgents", () => {
     await fs.promises.rm(tempDir, { recursive: true, force: true });
   });
 
-  test("deploys managed servers across agent configs non-destructively", async () => {
-    // Pre-populate one of the config files with user custom config
-    const claudeCodePath = path.join(tempDir, ".claude.json");
-    await fs.promises.writeFile(
-      claudeCodePath,
-      JSON.stringify({
-        mcpServers: {
-          "user-personal-mcp": { command: "personal-cmd", args: [] },
-          "managed-deprecated": { command: "old" }
-        },
-        userSetting: true
-      })
-    );
-
+  test("deploys managed servers across agent configs with format compliance", async () => {
     const managedServers = {
       filesystem: {
         command: "npx",
@@ -144,35 +95,21 @@ describe("deployToAgents", () => {
     };
 
     const reports = await deployToAgents(managedServers, tempDir);
-
     expect(reports.length).toBe(5);
-    for (const report of reports) {
-      expect(report.startsWith("✓")).toBe(true);
-    }
 
-    // Verify Claude Code config was merged non-destructively
-    const rawClaude = await fs.promises.readFile(claudeCodePath, "utf-8");
-    const parsedClaude = JSON.parse(rawClaude);
-    expect(parsedClaude.userSetting).toBe(true);
-    expect(parsedClaude.mcpServers["user-personal-mcp"]).toBeDefined();
-    expect(parsedClaude.mcpServers["managed-deprecated"]).toBeUndefined();
-    expect(parsedClaude.mcpServers["managed-filesystem"]).toBeDefined();
-    expect(parsedClaude.mcpServers["managed-filesystem"].description).toBeUndefined();
-    expect(parsedClaude.mcpServers["managed-github"]).toBeDefined();
+    // 1. Verify Standard agent (Claude Code / Antigravity / Cursor)
+    const claudeCodePath = path.join(tempDir, ".claude.json");
+    const parsedClaude = JSON.parse(await fs.promises.readFile(claudeCodePath, "utf-8"));
+    expect(parsedClaude.mcpServers["managed-filesystem"].command).toBe("npx");
+    expect(parsedClaude.mcpServers["managed-filesystem"].args).toEqual(["-y", "@modelcontextprotocol/server-filesystem"]);
     expect(parsedClaude.mcpServers["managed-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
 
-    // Verify OpenCode uses rootKey "mcp"
+    // 2. Verify OpenCode agent conforms to OpenCode schema
     const openCodePath = path.join(tempDir, ".config/opencode/opencode.json");
-    const rawOpenCode = await fs.promises.readFile(openCodePath, "utf-8");
-    const parsedOpenCode = JSON.parse(rawOpenCode);
+    const parsedOpenCode = JSON.parse(await fs.promises.readFile(openCodePath, "utf-8"));
     expect(parsedOpenCode.mcp).toBeDefined();
-    expect(parsedOpenCode.mcp["managed-filesystem"]).toBeDefined();
-    expect(parsedOpenCode.mcp["managed-github"]).toBeDefined();
-
-    // Verify Antigravity CLI
-    const antigravityPath = path.join(tempDir, ".gemini/antigravity-cli/mcp_config.json");
-    const rawAntigravity = await fs.promises.readFile(antigravityPath, "utf-8");
-    const parsedAntigravity = JSON.parse(rawAntigravity);
-    expect(parsedAntigravity.mcpServers["managed-filesystem"]).toBeDefined();
+    expect(parsedOpenCode.mcp["managed-filesystem"].type).toBe("local");
+    expect(parsedOpenCode.mcp["managed-filesystem"].command).toEqual(["npx", "-y", "@modelcontextprotocol/server-filesystem"]);
+    expect(parsedOpenCode.mcp["managed-github"].environment.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
   });
 });

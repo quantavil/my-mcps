@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { renderReadmeTable, updateReadmeContent } from "./src/catalog";
 import { deployToAgents } from "./src/deployer";
 import { interpolateSecrets, parseEnv } from "./src/secrets";
 
@@ -9,12 +8,20 @@ export function extractReferencedEnvVars(servers: Record<string, any>): string[]
   const jsonStr = JSON.stringify(servers);
   const matches = jsonStr.matchAll(/\${([A-Z0-9_]+)}/g);
   for (const match of matches) {
-    vars.add(match[1]);
+    // Ignore standard system variables
+    if (match[1] !== "HOME") {
+      vars.add(match[1]);
+    }
   }
   for (const server of Object.values(servers)) {
     if (server.env && typeof server.env === "object") {
-      for (const key of Object.keys(server.env)) {
-        vars.add(key);
+      for (const [k, v] of Object.entries(server.env)) {
+        if (typeof v === "string") {
+          const vMatches = v.matchAll(/\${([A-Z0-9_]+)}/g);
+          for (const vm of vMatches) {
+            if (vm[1] !== "HOME") vars.add(vm[1]);
+          }
+        }
       }
     }
   }
@@ -35,43 +42,58 @@ export async function runDeploy(
   const manifest = JSON.parse(manifestRaw);
   const servers = manifest.servers || {};
 
-  // 1. Read .env if present
+  // 1. Read .env and merge with process.env (system environment variables)
   const envPath = path.join(rootDir, ".env");
-  let envVars: Record<string, string> = {};
+  let fileEnv: Record<string, string> = {};
   if (fs.existsSync(envPath)) {
     const envRaw = await fs.promises.readFile(envPath, "utf-8");
-    envVars = parseEnv(envRaw);
+    fileEnv = parseEnv(envRaw);
   }
+  const mergedEnv: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    HOME: homeDir,
+    ...fileEnv
+  };
 
-  // 2. Interpolate secrets
-  const template = JSON.stringify(servers);
-  const { resolved, missing } = interpolateSecrets(template, envVars);
+  // 2. Interpolate secrets cleanly
+  const { servers: resolvedServers, missing } = interpolateSecrets(servers, mergedEnv);
   if (missing.length > 0) {
-    console.warn(`⚠️  Warning: Missing secrets in .env: ${missing.join(", ")}`);
-  }
-  const resolvedServers = JSON.parse(resolved);
-
-  // 3. Update README.md catalog
-  const readmePath = path.join(rootDir, "README.md");
-  if (fs.existsSync(readmePath)) {
-    try {
-      const readmeContent = await fs.promises.readFile(readmePath, "utf-8");
-      const table = renderReadmeTable(servers);
-      const updatedReadme = updateReadmeContent(readmeContent, table);
-      await fs.promises.writeFile(readmePath, updatedReadme);
-      console.log("✓ Updated README.md catalog");
-    } catch (err) {
-      console.error(`✗ Failed to update README.md: ${(err as Error).message}`);
-    }
+    console.warn(`⚠️  Warning: Missing secrets (omitted from deployed servers): ${missing.join(", ")}`);
   }
 
-  // 4. Deploy to agent targets
+  // 3. Deploy to agent targets
   const reports = await deployToAgents(resolvedServers, homeDir);
   for (const report of reports) {
     console.log(report);
   }
 
   return true;
+}
+
+export async function runList(rootDir: string = import.meta.dir): Promise<void> {
+  const manifestPath = path.join(rootDir, "mcp-servers.json");
+  if (!fs.existsSync(manifestPath)) {
+    console.error(`✗ Manifest file not found at ${manifestPath}`);
+    return;
+  }
+
+  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
+  const manifest = JSON.parse(manifestRaw);
+  const servers = manifest.servers || {};
+
+  console.log("\nConfigured MCP Servers:");
+  console.log("─".repeat(70));
+  for (const [name, def] of Object.entries(servers)) {
+    const d = def as any;
+    const cmd = `${d.command} ${(d.args || []).join(" ")}`;
+    const envKeys = d.env ? Object.keys(d.env) : [];
+    console.log(`• \x1b[1m${name}\x1b[0m: ${d.description || ""}`);
+    console.log(`  Command: ${cmd}`);
+    if (envKeys.length > 0) {
+      console.log(`  Secrets: ${envKeys.join(", ")}`);
+    }
+    console.log();
+  }
 }
 
 export async function runCheck(rootDir: string = import.meta.dir): Promise<boolean> {
@@ -87,29 +109,7 @@ export async function runCheck(rootDir: string = import.meta.dir): Promise<boole
   const manifest = JSON.parse(manifestRaw);
   const servers = manifest.servers || {};
 
-  // 1. Validate README.md catalog
-  const readmePath = path.join(rootDir, "README.md");
-  if (!fs.existsSync(readmePath)) {
-    console.error(`✗ Missing README.md file at ${readmePath}`);
-    passed = false;
-  } else {
-    const readmeContent = await fs.promises.readFile(readmePath, "utf-8");
-    const expectedTable = renderReadmeTable(servers);
-    try {
-      const expectedReadme = updateReadmeContent(readmeContent, expectedTable);
-      if (readmeContent !== expectedReadme) {
-        console.error("✗ README.md catalog table is outdated. Run 'bun run deploy' to update.");
-        passed = false;
-      } else {
-        console.log("✓ README.md catalog table is up to date");
-      }
-    } catch (err) {
-      console.error(`✗ README.md validation failed: ${(err as Error).message}`);
-      passed = false;
-    }
-  }
-
-  // 2. Validate .env.example coverage
+  // Validate .env.example coverage
   const envExamplePath = path.join(rootDir, ".env.example");
   if (!fs.existsSync(envExamplePath)) {
     console.error(`✗ Missing .env.example file at ${envExamplePath}`);
@@ -126,7 +126,7 @@ export async function runCheck(rootDir: string = import.meta.dir): Promise<boole
       );
       passed = false;
     } else {
-      console.log("✓ All referenced environment variables are present in .env.example");
+      console.log("✓ All referenced environment variables are documented in .env.example");
     }
   }
 
@@ -161,8 +161,9 @@ Usage:
   bun index.ts [command]
 
 Commands:
-  deploy    Interpolate secrets, update README catalog, and deploy to agent targets (default)
-  check     Validate README catalog and .env.example coverage
+  deploy    Interpolate secrets and deploy to agent targets (default)
+  list      Display configured servers and required secrets
+  check     Validate that all required secrets are documented in .env.example
   test      Execute test suite via bun test
   sync      Display upstream MCP server configuration status
   help      Show this help message
@@ -176,6 +177,10 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     case "deploy": {
       const ok = await runDeploy();
       if (!ok) process.exit(1);
+      break;
+    }
+    case "list": {
+      await runList();
       break;
     }
     case "check": {
