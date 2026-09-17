@@ -251,5 +251,18 @@ describe("runEnable and runDisable", () => {
 
     await expect(runList(tempDir)).resolves.toBeUndefined();
   });
+
+  test("corrupt manifest does not throw uncaught error and returns false/error", async () => {
+    await fs.promises.writeFile(
+      path.join(tempDir, "mcp-servers.json"),
+      "{ invalid json syntax ... "
+    );
+
+    const deployOk = await runDeploy(tempDir, tempHome);
+    expect(deployOk).toBe(false);
+
+    const checkOk = await runCheck(tempDir);
+    expect(checkOk).toBe(false);
+  });
 });
 

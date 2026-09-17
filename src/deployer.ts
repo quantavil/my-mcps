@@ -144,6 +144,11 @@ export async function deployToAgents(
             existing = JSON.parse(raw);
           }
         } catch {
+          const bakPath = `${target.configPath}.bak`;
+          try {
+            await fs.promises.copyFile(target.configPath, bakPath);
+            reports.push(`⚠️  ${target.name}: unparseable config backed up to ${bakPath}`);
+          } catch {}
           existing = {};
         }
       }
@@ -157,7 +162,7 @@ export async function deployToAgents(
       );
 
       if (isToml) {
-        const serialized = Bun.TOML.stringify(merged);
+        const serialized = Bun.TOML.stringify(merged) ?? "";
         await fs.promises.writeFile(target.configPath, serialized);
       } else {
         await fs.promises.writeFile(target.configPath, JSON.stringify(merged, null, 2) + "\n");

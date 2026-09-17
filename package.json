@@ -9,6 +9,7 @@
     "setup": "./run.sh deploy",
     "deploy": "./run.sh deploy",
     "check": "./run.sh check",
+    "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "sync": "./run.sh sync"
   },

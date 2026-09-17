@@ -8,24 +8,25 @@ export function extractReferencedEnvVars(servers: Record<string, any>): string[]
   const jsonStr = JSON.stringify(servers);
   const matches = jsonStr.matchAll(/\${([A-Z0-9_]+)}/g);
   for (const match of matches) {
-    // Ignore standard system variables
-    if (match[1] !== "HOME") {
-      vars.add(match[1]);
-    }
-  }
-  for (const server of Object.values(servers)) {
-    if (server.env && typeof server.env === "object") {
-      for (const [k, v] of Object.entries(server.env)) {
-        if (typeof v === "string") {
-          const vMatches = v.matchAll(/\${([A-Z0-9_]+)}/g);
-          for (const vm of vMatches) {
-            if (vm[1] !== "HOME") vars.add(vm[1]);
-          }
-        }
-      }
+    const varName = match[1];
+    if (varName && varName !== "HOME") {
+      vars.add(varName);
     }
   }
   return Array.from(vars).sort();
+}
+
+export function loadManifest(rootDir: string): { manifest: any; error?: string } {
+  const manifestPath = path.join(rootDir, "mcp-servers.json");
+  if (!fs.existsSync(manifestPath)) {
+    return { manifest: null, error: `Manifest file not found at ${manifestPath}` };
+  }
+  try {
+    const manifestRaw = fs.readFileSync(manifestPath, "utf-8");
+    return { manifest: JSON.parse(manifestRaw) };
+  } catch (err) {
+    return { manifest: null, error: `Invalid JSON in manifest file at ${manifestPath}: ${(err as Error).message}` };
+  }
 }
 
 export async function setServerEnabled(
@@ -33,12 +34,10 @@ export async function setServerEnabled(
   serverName: string,
   enabled: boolean
 ): Promise<{ success: boolean; error?: string }> {
-  const manifestPath = path.join(rootDir, "mcp-servers.json");
-  if (!fs.existsSync(manifestPath)) {
-    return { success: false, error: `Manifest file not found at ${manifestPath}` };
+  const { manifest, error } = loadManifest(rootDir);
+  if (!manifest) {
+    return { success: false, error };
   }
-  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
-  const manifest = JSON.parse(manifestRaw);
   if (!manifest.servers || !manifest.servers[serverName]) {
     return { success: false, error: `Server '${serverName}' not found in manifest` };
   }
@@ -49,6 +48,7 @@ export async function setServerEnabled(
     manifest.servers[serverName].enabled = false;
   }
 
+  const manifestPath = path.join(rootDir, "mcp-servers.json");
   await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return { success: true };
 }
@@ -93,14 +93,12 @@ export async function runDeploy(
   rootDir: string = import.meta.dir,
   homeDir: string = process.env.HOME || ""
 ): Promise<boolean> {
-  const manifestPath = path.join(rootDir, "mcp-servers.json");
-  if (!fs.existsSync(manifestPath)) {
-    console.error(`✗ Manifest file not found at ${manifestPath}`);
+  const { manifest, error } = loadManifest(rootDir);
+  if (!manifest) {
+    console.error(`✗ ${error}`);
     return false;
   }
 
-  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
-  const manifest = JSON.parse(manifestRaw);
   const allServers = manifest.servers || {};
   const activeServers: Record<string, any> = {};
   for (const [name, def] of Object.entries(allServers)) {
@@ -138,25 +136,27 @@ export async function runDeploy(
 }
 
 export async function runList(rootDir: string = import.meta.dir): Promise<void> {
-  const manifestPath = path.join(rootDir, "mcp-servers.json");
-  if (!fs.existsSync(manifestPath)) {
-    console.error(`✗ Manifest file not found at ${manifestPath}`);
+  const { manifest, error } = loadManifest(rootDir);
+  if (!manifest) {
+    console.error(`✗ ${error}`);
     return;
   }
 
-  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
-  const manifest = JSON.parse(manifestRaw);
   const servers = manifest.servers || {};
+  const isTTY = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+  const green = (s: string) => (isTTY ? `\x1b[32m${s}\x1b[0m` : s);
+  const red = (s: string) => (isTTY ? `\x1b[31m${s}\x1b[0m` : s);
+  const bold = (s: string) => (isTTY ? `\x1b[1m${s}\x1b[0m` : s);
 
   console.log("\nConfigured MCP Servers:");
   console.log("─".repeat(70));
   for (const [name, def] of Object.entries(servers)) {
     const d = def as any;
     const isEnabled = d.enabled !== false;
-    const statusTag = isEnabled ? "\x1b[32m[enabled]\x1b[0m" : "\x1b[31m[disabled]\x1b[0m";
+    const statusTag = isEnabled ? green("[enabled]") : red("[disabled]");
     const cmd = `${d.command} ${(d.args || []).join(" ")}`;
     const envKeys = d.env ? Object.keys(d.env) : [];
-    console.log(`• \x1b[1m${name}\x1b[0m ${statusTag}: ${d.description || ""}`);
+    console.log(`• ${bold(name)} ${statusTag}: ${d.description || ""}`);
     console.log(`  Command: ${cmd}`);
     if (envKeys.length > 0) {
       console.log(`  Secrets: ${envKeys.join(", ")}`);
@@ -168,14 +168,12 @@ export async function runList(rootDir: string = import.meta.dir): Promise<void> 
 export async function runCheck(rootDir: string = import.meta.dir): Promise<boolean> {
   let passed = true;
 
-  const manifestPath = path.join(rootDir, "mcp-servers.json");
-  if (!fs.existsSync(manifestPath)) {
-    console.error(`✗ Missing manifest file: ${manifestPath}`);
+  const { manifest, error } = loadManifest(rootDir);
+  if (!manifest) {
+    console.error(`✗ ${error}`);
     return false;
   }
 
-  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
-  const manifest = JSON.parse(manifestRaw);
   const servers = manifest.servers || {};
 
   // Validate .env.example coverage
@@ -203,14 +201,12 @@ export async function runCheck(rootDir: string = import.meta.dir): Promise<boole
 }
 
 export async function runSync(rootDir: string = import.meta.dir): Promise<void> {
-  const manifestPath = path.join(rootDir, "mcp-servers.json");
-  if (!fs.existsSync(manifestPath)) {
-    console.error(`✗ Missing manifest file: ${manifestPath}`);
+  const { manifest, error } = loadManifest(rootDir);
+  if (!manifest) {
+    console.error(`✗ ${error}`);
     return;
   }
 
-  const manifestRaw = await fs.promises.readFile(manifestPath, "utf-8");
-  const manifest = JSON.parse(manifestRaw);
   const servers = manifest.servers || {};
 
   console.log("ℹ Syncing upstream MCP servers...");
