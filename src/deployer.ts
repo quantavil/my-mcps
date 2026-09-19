@@ -77,7 +77,7 @@ export function getAgentTargets(homeDir: string): AgentTarget[] {
   return [
     {
       name: "Antigravity CLI",
-      configPath: path.join(homeDir, ".gemini/antigravity-cli/mcp_config.json"),
+      configPath: path.join(homeDir, ".gemini/config/mcp_config.json"),
       format: "standard",
       rootKey: "mcpServers",
       prefix: "managed-"
