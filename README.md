@@ -5,7 +5,7 @@ Centralized Model Context Protocol (MCP) server manager powered by `bunx`.
 It merges servers declared in `mcp-servers.json` into your local AI agent configs without overwriting user-defined servers.
 
 ### Supported Agents
-- **Antigravity CLI** (`~/.gemini/antigravity-cli/mcp_config.json`)
+- **Antigravity CLI** (`~/.gemini/config/mcp_config.json`)
 - **Codex CLI** (`~/.codex/config.toml`)
 - **Claude Desktop** (`~/.config/Claude/claude_desktop_config.json`)
 - **Claude Code** (`~/.claude.json`)
