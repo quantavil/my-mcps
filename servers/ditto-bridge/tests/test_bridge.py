@@ -102,6 +102,24 @@ class BridgeTests(unittest.TestCase):
                 controller.capture(1, 'one', 'fixture', '', [], ['png'],
                                    observed_state='Settings visible')
 
+    def test_environment_reads_android_14_rotation_and_default_font_scale(self):
+        controller = MobileController()
+        responses = {
+            ('shell', 'wm', 'size'): 'Physical size: 1080x2400',
+            ('shell', 'wm', 'density'): 'Physical density: 420',
+            ('shell', 'getprop', 'ro.build.version.sdk'): '34',
+            ('shell', 'getprop', 'persist.sys.locale'): 'en-US',
+            ('shell', 'settings', 'get', 'system', 'font_scale'): 'null',
+            ('shell', 'cmd', 'uimode', 'night'): 'Night mode: no',
+            ('shell', 'dumpsys', 'input'): 'InputDeviceOrientation: 0',
+            ('shell', 'dumpsys', 'window', 'displays'): 'mRotation=0',
+            ('shell', 'getprop', 'ro.hardware.egl'): 'emulation',
+        }
+        with patch.object(controller, '_adb', side_effect=lambda *args: responses[args]):
+            environment = controller._environment()
+        self.assertEqual(environment['orientation'], 0)
+        self.assertEqual(environment['font_scale'], '1.0')
+
     def test_mcp_emulator_tool_validates_requests_and_preserves_active_capture(self):
         import asyncio
         import importlib.util

@@ -382,9 +382,14 @@ class MobileController:
         if not viewport or not density or not api or not locale:
             raise BridgeError('emulator did not report environment facts')
         font_scale = self._adb('shell', 'settings', 'get', 'system', 'font_scale').strip()
+        if font_scale == 'null':
+            font_scale = '1.0'
         theme = self._adb('shell', 'cmd', 'uimode', 'night').strip()
         display = self._adb('shell', 'dumpsys', 'input')
         rotation = re.search(r'SurfaceOrientation: (\d+)', display)
+        if not rotation:
+            display = self._adb('shell', 'dumpsys', 'window', 'displays')
+            rotation = re.search(r'\bmRotation=(\d+)\b', display)
         if not font_scale or not theme or not rotation:
             raise BridgeError('emulator did not report font scale, theme, or orientation')
         renderer = self._adb('shell', 'getprop', 'ro.hardware.egl').strip()
