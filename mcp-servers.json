@@ -53,32 +53,85 @@
       },
       "description": "Up-to-date documentation and code examples via Context7"
     },
-    "apktool": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "${HOME}/Documents/my-mcps/servers/apktool-mcp-server",
-        "run",
-        "apktool_mcp_server.py"
-      ],
-      "description": "Android APK decoding, manifest inspection, and smali analysis via Apktool"
-    },
-    "jadx": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "${HOME}/Documents/my-mcps/servers/jadx-mcp-server",
-        "run",
-        "jadx_mcp_server.py"
-      ],
-      "description": "JADX Android decompiler bridge MCP server"
-    },
     "codebase-memory": {
       "command": "bunx",
       "args": [
         "codebase-memory-mcp"
       ],
       "description": "Codebase memory knowledge graph and AST analysis"
+    },
+    "mobile-mcp": {
+      "command": "bunx",
+      "args": [
+        "@mobilenext/mobile-mcp@latest"
+      ],
+      "env": {
+        "MOBILEMCP_DISABLE_TELEMETRY": "1"
+      },
+      "description": "Local Mobile Next device exploration via connected emulators or devices; cloud service is not configured"
+    },
+    "ditto-jadx": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "jadx"
+      },
+      "description": "Package-bound local JADX analysis with Ditto MCP receipt"
+    },
+    "ditto-apktool": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "apktool"
+      },
+      "description": "Package-bound local Apktool analysis with Ditto MCP receipt"
+    },
+    "ditto-r2flutter": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "r2flutter"
+      },
+      "description": "Package-bound local r2Flutter AOT analysis with Ditto MCP receipt"
+    },
+    "ditto-mobile-control": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "mobile-control"
+      },
+      "description": "Local emulator controller with package-bound Ditto capture receipts"
+    },
+    "dart": {
+      "command": "dart",
+      "args": [
+        "mcp-server"
+      ],
+      "description": "Official Dart and Flutter development MCP server"
     },
     "blender": {
       "command": "uvx",

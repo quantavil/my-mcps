@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { deployToAgents } from "./src/deployer";
 import { interpolateSecrets, parseEnv } from "./src/secrets";
@@ -9,7 +10,7 @@ export function extractReferencedEnvVars(servers: Record<string, any>): string[]
   const matches = jsonStr.matchAll(/\${([A-Z0-9_]+)}/g);
   for (const match of matches) {
     const varName = match[1];
-    if (varName && varName !== "HOME") {
+    if (varName && !["HOME", "MCP_ROOT"].includes(varName)) {
       vars.add(varName);
     }
   }
@@ -56,7 +57,7 @@ export async function setServerEnabled(
 export async function runEnable(
   serverName?: string,
   rootDir: string = import.meta.dir,
-  homeDir: string = process.env.HOME || ""
+  homeDir: string = os.homedir()
 ): Promise<boolean> {
   if (!serverName) {
     console.error("✗ Usage: ./run.sh enable <server-name>");
@@ -74,7 +75,7 @@ export async function runEnable(
 export async function runDisable(
   serverName?: string,
   rootDir: string = import.meta.dir,
-  homeDir: string = process.env.HOME || ""
+  homeDir: string = os.homedir()
 ): Promise<boolean> {
   if (!serverName) {
     console.error("✗ Usage: ./run.sh disable <server-name>");
@@ -91,7 +92,7 @@ export async function runDisable(
 
 export async function runDeploy(
   rootDir: string = import.meta.dir,
-  homeDir: string = process.env.HOME || ""
+  homeDir: string = os.homedir()
 ): Promise<boolean> {
   const { manifest, error } = loadManifest(rootDir);
   if (!manifest) {
@@ -117,6 +118,7 @@ export async function runDeploy(
   const mergedEnv: Record<string, string> = {
     ...(process.env as Record<string, string>),
     HOME: homeDir,
+    MCP_ROOT: rootDir,
     ...fileEnv
   };
 

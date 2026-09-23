@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export interface AgentTarget {
@@ -84,7 +85,9 @@ export function getAgentTargets(homeDir: string): AgentTarget[] {
     },
     {
       name: "Claude Desktop",
-      configPath: path.join(homeDir, ".config/Claude/claude_desktop_config.json"),
+      configPath: process.platform === "win32"
+        ? path.join((homeDir === os.homedir() ? process.env.APPDATA : undefined) || path.join(homeDir, "AppData/Roaming"), "Claude/claude_desktop_config.json")
+        : path.join(homeDir, ".config/Claude/claude_desktop_config.json"),
       format: "standard",
       rootKey: "mcpServers",
       prefix: "managed-"
@@ -122,7 +125,7 @@ export function getAgentTargets(homeDir: string): AgentTarget[] {
 
 export async function deployToAgents(
   managedServers: Record<string, any>,
-  homeDir: string = process.env.HOME || ""
+  homeDir: string = os.homedir()
 ): Promise<string[]> {
   const targets = getAgentTargets(homeDir);
   const reports: string[] = [];

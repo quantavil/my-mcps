@@ -4,6 +4,11 @@ Centralized Model Context Protocol (MCP) server manager powered by `bunx`.
 
 It merges servers declared in `mcp-servers.json` into your local AI agent configs without overwriting user-defined servers.
 
+The four required Ditto evidence servers and Dart development MCP
+are documented in [docs/ditto-mcp-integration.md](docs/ditto-mcp-integration.md).
+Their configuration alone does not prove a capability; run real APK and emulator
+probes before using a Ditto receipt.
+
 ### Supported Agents
 - **Antigravity CLI** (`~/.gemini/config/mcp_config.json`)
 - **Codex CLI** (`~/.codex/config.toml`)

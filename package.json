@@ -6,12 +6,12 @@
     "my-mcps": "./run.sh"
   },
   "scripts": {
-    "setup": "./run.sh deploy",
-    "deploy": "./run.sh deploy",
-    "check": "./run.sh check",
+    "setup": "bun index.ts deploy",
+    "deploy": "bun index.ts deploy",
+    "check": "bun index.ts check",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
-    "sync": "./run.sh sync"
+    "sync": "bun index.ts sync"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",
