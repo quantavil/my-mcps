@@ -111,8 +111,10 @@ if ROLE == 'mobile-control':
         Perform: action tap/tap_target/wait_target/type/swipe/back/launch/stop/restart/reset/wait.
         Label contract actions with step; reset clears this app's data, use only for declared fixtures.
         Replay: steps (1..100 perform argument objects); stops on the first failure.
-        run_checkpoints: plan entries contain steps, optional expected UI target,
-        and checkpoint capture fields. Stops with completed IDs on a mismatch.
+        run_checkpoints: plan entries contain steps, optional unique expected UI
+        target, optional expect_timeout_ms (default 5000, max 30000), and
+        checkpoint capture fields. Waits for the target before capturing and
+        stops with completed IDs on a mismatch.
         Recover: after restarting the same emulator, verify package/environment,
         retain completed checkpoints, and replay navigation to the failed state.
         Capture: number, checkpoint_id, fixture, setup, actions, kinds, observed_state.

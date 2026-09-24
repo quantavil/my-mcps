@@ -235,6 +235,21 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result['completed'], ['first'])
         self.assertEqual(result['stopped_at'], 'second')
 
+    def test_run_checkpoints_waits_for_transition_before_capture(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        with patch.object(controller, '_target', side_effect=[
+                BridgeError('UI target not found: Periods'), {'bounds': [1, 2, 3, 4]}]) as target, patch.object(
+                controller, 'capture', return_value={'checkpoint_id': 'periods'}) as capture, patch(
+                'bridge.time.sleep'):
+            result = controller.run_checkpoints([{
+                'expect': 'Periods',
+                'checkpoint': {'checkpoint_id': 'periods'},
+            }])
+        self.assertEqual(result['completed'], ['periods'])
+        self.assertEqual(target.call_count, 2)
+        capture.assert_called_once_with(checkpoint_id='periods')
+
     def test_recover_keeps_completed_checkpoints_and_discards_incomplete_actions(self):
         controller = MobileController()
         controller.stage = Path(tempfile.gettempdir())

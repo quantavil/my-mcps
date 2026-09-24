@@ -424,6 +424,18 @@ class MobileController:
             raise BridgeError(f'UI target is ambiguous: {selector} ({len(unique)} matches)')
         return next(iter(unique.values()))
 
+    def _wait_target(self, selector, match, duration_ms):
+        if not isinstance(duration_ms, int) or not 0 < duration_ms <= 30000:
+            raise BridgeError('target wait must be 1..30000 ms')
+        deadline = time.monotonic() + duration_ms / 1000
+        while True:
+            try:
+                return self._target(selector, match)
+            except BridgeError as error:
+                if 'not found' not in str(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
     def _environment(self):
         viewport = self._adb('shell', 'wm', 'size').strip().split(':')[-1].strip()
         density = self._adb('shell', 'wm', 'density').strip().split(':')[-1].strip()
@@ -579,16 +591,8 @@ class MobileController:
             left, top, right, bottom = target['bounds']
             self._adb('shell', 'input', 'tap', (left + right) // 2, (top + bottom) // 2)
             arguments = {'selector': selector, 'match': match, 'bounds': target['bounds']}
-        elif action == 'wait_target' and 0 < duration_ms <= 30000:
-            deadline = time.monotonic() + duration_ms / 1000
-            while True:
-                try:
-                    target = self._target(selector, match)
-                    break
-                except BridgeError as error:
-                    if 'not found' not in str(error) or time.monotonic() >= deadline:
-                        raise
-                    time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+        elif action == 'wait_target':
+            target = self._wait_target(selector, match, duration_ms)
             arguments = {'selector': selector, 'match': match, 'bounds': target['bounds']}
         elif action == 'type' and isinstance(text, str) and text:
             if not re.fullmatch(r'[A-Za-z0-9 @.,_+:/=-]+', text):
@@ -658,8 +662,9 @@ class MobileController:
             try:
                 if item.get('steps'):
                     self.replay(item['steps'])
-                if item.get('expect'):
-                    self._target(item['expect'], item.get('match', 'exact'))
+                if 'expect' in item:
+                    self._wait_target(item['expect'], item.get('match', 'exact'),
+                                      item.get('expect_timeout_ms', 5000))
                 self.capture(**checkpoint)
             except (BridgeError, TypeError) as error:
                 return {'completed': completed, 'stopped_at': identifier,
