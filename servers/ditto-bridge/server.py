@@ -32,8 +32,8 @@ if ROLE == 'mobile-control':
         seconds for Android boot, not app readiness. Never clears app data.
         """
         with controller_lock:
-            if MOBILE.stage is not None and operation == 'stop':
-                raise ValueError('finalize or abort the active capture before managing its emulator')
+            if (MOBILE.stage is not None or MOBILE.preview_mode) and operation == 'stop':
+                raise ValueError('finalize or abort the active mobile session before managing its emulator')
             env = {**os.environ, 'DITTO_AVD': avd, 'DITTO_EMULATOR_PORT': str(port),
                    'DITTO_GPU': gpu, 'DITTO_ACCEL': accel, 'DITTO_BOOT_TIMEOUT': '300'}
             result = subprocess.run([sys.executable, str(Path(__file__).with_name('emulator_manager.py')), operation],
@@ -44,10 +44,10 @@ if ROLE == 'mobile-control':
 
     @mcp.tool()
     def observe_screen() -> Image:
-        """View the current emulator screen during an active capture, before choosing an action."""
+        """View the current emulator screen during an active capture or preview."""
         with controller_lock:
-            if MOBILE.stage is None:
-                raise ValueError('begin a capture before observing')
+            if MOBILE.stage is None and not MOBILE.preview_mode:
+                raise ValueError('begin a capture or preview before observing')
             return Image(data=MOBILE._screen(), format='png')
 
     @mcp.tool()
@@ -67,6 +67,8 @@ if ROLE == 'mobile-control':
         global RECORDER
         with controller_lock:
             if operation == 'start':
+                if MOBILE.preview_mode:
+                    raise ValueError('human recorder requires an evidence capture, not a preview')
                 if RECORDER is not None:
                     raise ValueError('stop the existing recorder before starting another')
                 if not contract_path:
@@ -88,7 +90,7 @@ if ROLE == 'mobile-control':
             raise ValueError('unknown recorder operation')
 
     @mcp.tool()
-    def mobile_control(operation: Literal['probe', 'begin', 'perform', 'replay', 'run_checkpoints', 'capture', 'recover', 'finalize', 'abort'], serial: str | None = None,
+    def mobile_control(operation: Literal['probe', 'begin', 'preview_begin', 'perform', 'replay', 'run_checkpoints', 'capture', 'recover', 'finalize', 'abort'], serial: str | None = None,
                        target_id: str | None = None, apk_path: str | None = None,
                        package_name: str | None = None,
                        output_dir: str | None = None, action: Literal['tap', 'tap_target', 'wait_target', 'type', 'swipe', 'back', 'launch', 'stop', 'restart', 'reset', 'wait'] | None = None,
@@ -108,6 +110,8 @@ if ROLE == 'mobile-control':
 
         Probe: serial, target_id (AVD name), apk_path, package_name, output_dir.
         Begin: serial, apk_path, package_name, output_dir; acquires exclusive device ownership.
+        Preview_begin: serial, target_id, package_name; controls an already running
+        debug app without installation, receipts, or eligible phase evidence.
         Perform: action tap/tap_target/wait_target/type/swipe/back/launch/stop/restart/reset/wait.
         Label contract actions with step; reset clears this app's data, use only for declared fixtures.
         Replay: steps (1..100 perform argument objects); stops on the first failure.
@@ -120,19 +124,23 @@ if ROLE == 'mobile-control':
         Capture: number, checkpoint_id, fixture, setup, actions, kinds, observed_state.
         actions must equal executed step labels in order. observed_state is the agent's
         observation, to be checked against PNG/XML; command success alone is not UI success.
-        Finalize retains capture; abort discards incomplete capture. Both release ownership.
+        Finalize retains capture; abort ends a capture or preview. Both release ownership.
         """
         with controller_lock:
             if RECORDER is not None and operation in ('perform', 'replay', 'run_checkpoints',
                                                       'capture', 'finalize', 'abort'):
                 raise ValueError('stop the human recorder before AI-driven capture')
-            if operation in ('probe', 'begin'):
+            if operation in ('probe', 'begin', 'preview_begin'):
                 if not serial:
                     raise ValueError('serial is required')
                 MOBILE.acquire_device(serial)
                 try:
                     if operation == 'probe':
                         return MOBILE.probe(serial, target_id, apk_path, package_name, output_dir)
+                    if operation == 'preview_begin':
+                        if not target_id:
+                            raise ValueError('target_id is required for preview')
+                        return MOBILE.preview_begin(serial, target_id, package_name)
                     return MOBILE.begin(serial, apk_path, package_name, output_dir)
                 except Exception:
                     MOBILE.abort()

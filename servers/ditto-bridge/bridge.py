@@ -326,6 +326,7 @@ class MobileController:
         self.environment = None
         self.receipt = None
         self.stage = None
+        self.preview_mode = False
         self.output = None
         self.package_sha = None
         self.package_name = None
@@ -376,8 +377,8 @@ class MobileController:
 
     def inspect_ui(self, query='', limit=60):
         """Return bounded UI labels and bounds without sending another screenshot."""
-        if self.stage is None:
-            raise BridgeError('begin capture before inspecting UI')
+        if self.stage is None and not self.preview_mode:
+            raise BridgeError('begin capture or preview before inspecting UI')
         if not isinstance(query, str) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise BridgeError('UI query or limit is invalid')
         try:
@@ -553,7 +554,7 @@ class MobileController:
         if apk_package_name(apk) != package_name:
             raise BridgeError('requested package name differs from supplied APK')
         output = Path(output_dir).expanduser().absolute()
-        if output.exists() or self.stage is not None:
+        if output.exists() or self.stage is not None or self.preview_mode:
             raise BridgeError('capture output exists or another capture is active')
         self._identity(serial, self.target['id'])
         self.environment = self._environment()
@@ -576,10 +577,28 @@ class MobileController:
         return {'installed_package_sha256': self.package_sha,
                 'target': self.target, 'session_id': SESSION_ID}
 
+    def preview_begin(self, serial, target_id, package_name):
+        """Control a running debug app without installation or evidence export."""
+        if self.stage is not None or self.preview_mode:
+            raise BridgeError('another mobile session is active')
+        if not isinstance(package_name, str) or not re.fullmatch(
+                r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', package_name):
+            raise BridgeError('preview needs a valid Android package name')
+        self._identity(serial, target_id)
+        installed = self._adb('shell', 'pm', 'path', package_name).strip()
+        if not installed.startswith('package:/'):
+            raise BridgeError('preview package is not installed on this emulator')
+        self._assert_app_focus(package_name)
+        self.package_name = package_name
+        self.preview_mode = True
+        self.actions = []
+        return {'mode': 'preview', 'target': self.target,
+                'evidence_eligible': False}
+
     def perform(self, action, x=None, y=None, end_x=None, end_y=None,
                 text=None, duration_ms=300, step=None, selector=None, match='exact'):
-        if self.stage is None:
-            raise BridgeError('begin capture before UI actions')
+        if self.stage is None and not self.preview_mode:
+            raise BridgeError('begin capture or preview before UI actions')
         if step is not None and (not isinstance(step, str) or not step.strip()):
             raise BridgeError('protocol step must be a nonempty string')
         arguments = {}
@@ -630,7 +649,8 @@ class MobileController:
         event = {'action': action, 'arguments': arguments, 'step': step,
                  'result': 'command_executed',
                  'at': datetime.now(timezone.utc).isoformat()}
-        self.actions.append(event)
+        if self.stage is not None:
+            self.actions.append(event)
         return event
 
     def replay(self, steps):
@@ -651,6 +671,8 @@ class MobileController:
 
     def run_checkpoints(self, plan):
         """Replay verified steps and retain completed checkpoints if a later step fails."""
+        if self.stage is None:
+            raise BridgeError('begin capture before running checkpoints')
         if not isinstance(plan, list) or not 1 <= len(plan) <= 100:
             raise BridgeError('checkpoint plan requires 1..100 entries')
         completed = []
@@ -778,6 +800,7 @@ class MobileController:
         if self.stage is not None:
             shutil.rmtree(self.stage, ignore_errors=True)
         self.stage = self.output = None
+        self.preview_mode = False
         self.records, self.actions = [], []
         self.release_device()
         return {'aborted': True}

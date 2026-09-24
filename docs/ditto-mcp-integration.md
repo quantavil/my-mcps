@@ -22,12 +22,18 @@ FlutterDec was removed from configuration, bridge code, and the generator after
 its APK probes failed; the historical findings below explain the removal.
 
 `ditto-mobile-control` exposes one `mobile_control` tool with `probe`, `begin`,
-`perform`, `replay`, `capture`, `finalize`, and `abort` operations. Probe binds a named local emulator
+`preview_begin`, `perform`, `replay`, `capture`, `finalize`, and `abort` operations. Probe binds a named local emulator
 to a real installed APK and tests launch, tap, type, swipe, back, screenshot,
 and hierarchy capture. A capture session installs the exact supplied APK and
 exports declared PNG, XML, trace, or state artifacts with `capture.json`.
 Use the bounded `perform(action="wait", duration_ms=...)` action when startup
 needs time before a declared checkpoint.
+For hot-reload development, start the clone with `flutter run`, then call
+`preview_begin(serial, target_id, package_name)` on the already-running app.
+`perform`, `replay`, `observe_screen`, and `inspect_ui` work in preview; `abort`
+ends it. Preview does not install or hash an APK and cannot call `capture`,
+`run_checkpoints`, or `finalize`. Its images are not Ditto evidence. Stop the
+Flutter run session and start an APK-bound capture for phase comparison.
 Network and Flutter semantics capture are unavailable and fail explicitly if
 requested. Use only a declared fixture and checkpoint protocol; the controller
 cannot determine whether a tap reached the intended app state by itself.

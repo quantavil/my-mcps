@@ -86,6 +86,29 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result['arguments'], {'x': 42, 'y': 91})
         self.assertEqual(result['step'], 'Open settings')
 
+    def test_preview_controls_running_app_without_creating_evidence(self):
+        controller = MobileController()
+        with patch.object(controller, '_identity') as identity, patch.object(
+                controller, '_assert_app_focus') as focus, patch.object(
+                controller, '_adb', return_value='package:/data/app/base.apk'):
+            result = controller.preview_begin('emulator-5554', 'floww_fresh', 'com.example.floww')
+            identity.assert_called_once_with('emulator-5554', 'floww_fresh')
+            focus.assert_called_once_with('com.example.floww')
+            self.assertEqual(result['mode'], 'preview')
+            self.assertIsNone(controller.stage)
+            event = controller.perform('tap', x=42, y=91)
+            self.assertEqual(event['action'], 'tap')
+            self.assertEqual(controller.actions, [])
+            with self.assertRaisesRegex(BridgeError, 'capture'):
+                controller.capture(1, 'one', 'fixture', 'setup', [], ['png'],
+                                   observed_state='Preview')
+            with self.assertRaisesRegex(BridgeError, 'capture'):
+                controller.finalize()
+            with self.assertRaisesRegex(BridgeError, 'capture'):
+                controller.run_checkpoints([{'checkpoint': {'checkpoint_id': 'one'}}])
+        controller.abort()
+        self.assertFalse(controller.preview_mode)
+
     def test_capture_refuses_unexecuted_protocol(self):
         controller = MobileController()
         controller.stage = Path(tempfile.gettempdir())
@@ -160,6 +183,14 @@ class BridgeTests(unittest.TestCase):
                 tools = {tool.name for tool in await client.list_tools()}
                 self.assertIn('inspect_ui', tools)
                 self.assertIn('recorder_control', tools)
+                with patch.object(module.MOBILE, 'acquire_device'), patch.object(
+                        module.MOBILE, 'preview_begin', return_value={
+                            'mode': 'preview', 'evidence_eligible': False}) as preview:
+                    await client.call_tool('mobile_control', {
+                        'operation': 'preview_begin', 'serial': 'emulator-5554',
+                        'target_id': 'floww_fresh', 'package_name': 'com.example.floww'})
+                    preview.assert_called_once_with(
+                        'emulator-5554', 'floww_fresh', 'com.example.floww')
                 with patch.object(module.MOBILE, 'run_checkpoints', return_value={
                         'completed': ['one'], 'stopped_at': None}):
                     await client.call_tool('mobile_control', {'operation': 'run_checkpoints',
