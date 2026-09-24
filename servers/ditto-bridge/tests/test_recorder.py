@@ -1,5 +1,7 @@
 """Human oracle capture uses the same controller and receipts as AI capture."""
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -10,10 +12,17 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from recorder import Recorder
+from recorder import PANEL, Recorder
 
 
 class RecorderTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node is only needed to check browser JavaScript syntax')
+    def test_browser_panel_javascript_is_valid(self):
+        script = PANEL.split('<script>')[1].split('</script>')[0].replace('__TOKEN__', '"test"')
+        result = subprocess.run([shutil.which('node'), '--check'], input=script,
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -40,6 +49,61 @@ class RecorderTests(unittest.TestCase):
         self.mobile.perform.assert_called_with('tap', x=10, y=20, step=None)
         self.recorder.action('role', {'action': 'tap', 'x': 30, 'y': 40})
         self.mobile.perform.assert_called_with('tap', x=30, y=40, step='Choose self')
+
+    def test_tap_records_unique_selector_for_later_replay(self):
+        event = self.recorder.action('role', {'action': 'tap', 'x': 2, 'y': 3})
+        self.assertEqual(event['replay_selector'], 'For myself')
+        self.mobile.perform.assert_called_with('tap', x=2, y=3, step='Choose self')
+
+    def test_human_guide_comes_from_the_checkpoint_and_fixture(self):
+        contract = json.loads(self.path.read_text())
+        contract['fixtures'] = {'fresh': {'name': 'Ada'}}
+        contract['checkpoints'][0].update(capture_when='Self is selected and Continue is enabled.',
+                                          expect='For myself')
+        self.path.write_text(json.dumps(contract))
+        recorder = Recorder(self.mobile, self.path)
+        checkpoint = recorder.status()['checkpoints'][0]
+        self.assertEqual(checkpoint['setup'], 'At role')
+        self.assertEqual(checkpoint['capture_when'], 'Self is selected and Continue is enabled.')
+        self.assertEqual(checkpoint['fixture_values'], {'name': 'Ada'})
+        self.mobile.replay_plan = [{}]
+        recorder.capture('role')
+        self.mobile._target.assert_called_once_with('For myself')
+        self.assertEqual(self.mobile.replay_plan[0]['expect'], 'For myself')
+
+    def test_ambiguous_labels_keep_coordinate_replay(self):
+        node = dict(self.mobile.inspect_ui.return_value['nodes'][0])
+        node['bounds'] = [20, 20, 40, 40]
+        self.mobile.inspect_ui.return_value['nodes'].append(node)
+        event = self.recorder.action('role', {'action': 'tap', 'x': 2, 'y': 3})
+        self.assertNotIn('replay_selector', event)
+
+    def test_subset_keeps_contract_order_and_rejects_unknown_ids(self):
+        contract = json.loads(self.path.read_text())
+        contract['checkpoints'].append({**contract['checkpoints'][0], 'number': 2, 'id': 'goal'})
+        self.path.write_text(json.dumps(contract))
+        recorder = Recorder(self.mobile, self.path, checkpoint_ids=['goal'])
+        self.assertEqual(list(recorder.checkpoints), ['goal'])
+        recorder.action('goal', {'action': 'tap', 'x': 10, 'y': 20})
+        with self.assertRaisesRegex(ValueError, 'unknown'):
+            Recorder(self.mobile, self.path, checkpoint_ids=['missing'])
+
+    def test_stop_preserves_capture_and_pending_actions(self):
+        self.mobile.actions = [{'step': 'Choose self'}]
+        self.recorder.start()
+        self.recorder.stop()
+        self.assertEqual(self.mobile.actions, [{'step': 'Choose self'}])
+        self.mobile.abort.assert_not_called()
+        self.mobile.finalize.assert_not_called()
+
+    def test_handoff_freezes_panel_without_finalizing_capture(self):
+        self.assertTrue(self.recorder.handoff()['handoff_requested'])
+        with self.assertRaisesRegex(ValueError, 'handed back'):
+            self.recorder.action('role', {'action': 'tap', 'x': 10, 'y': 20})
+        self.mobile.records = [{'checkpoint_id': 'role'}]
+        with self.assertRaisesRegex(ValueError, 'handed back'):
+            self.recorder.finalize()
+        self.mobile.finalize.assert_not_called()
 
     def test_capture_uses_contract_names_and_auto_observed_text(self):
         self.mobile.actions = [{'step': 'Choose self'}]

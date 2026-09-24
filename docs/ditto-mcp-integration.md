@@ -22,12 +22,19 @@ FlutterDec was removed from configuration, bridge code, and the generator after
 its APK probes failed; the historical findings below explain the removal.
 
 `ditto-mobile-control` exposes one `mobile_control` tool with `probe`, `begin`,
-`preview_begin`, `perform`, `replay`, `capture`, `finalize`, and `abort` operations. Probe binds a named local emulator
+`preview_begin`, `perform`, `replay`, `run_checkpoints`, `capture`, `recover`, `finalize`, and `abort` operations. Probe binds a named local emulator
 to a real installed APK and tests launch, tap, type, swipe, back, screenshot,
-and hierarchy capture. A capture session installs the exact supplied APK and
+and hierarchy capture. Probe and capture reuse an installed APK only after verifying its exact hash; otherwise they install the supplied APK. Capture
 exports declared PNG, XML, trace, or state artifacts with `capture.json`.
-Use the bounded `perform(action="wait", duration_ms=...)` action when startup
-needs time before a declared checkpoint.
+Use `tap_target` to wait for a control and tap it, and a unique `expect` marker
+on each checkpoint to guard screen transitions. Fixed waits are for states without usable targets.
+`recorder_control` opens a local still-image panel for optional human navigation
+on either app, with contract-ordered checkpoint selection and a return-control button.
+Stopping the recorder preserves the capture session for the AI to resume.
+`capture.json` embeds candidate replay steps and session/ADB timings.
+`run_checkpoints(plan_path=...)` loads that export or a reviewed `{ "plan": [...] }`
+file; every loaded checkpoint needs an expected-screen marker. Review fixtures and
+selectors before reuse, and verify clone behavior after execution.
 For hot-reload development, start the clone with `flutter run`, then call
 `preview_begin(serial, target_id, package_name)` on the already-running app.
 `perform`, `replay`, `observe_screen`, and `inspect_ui` work in preview; `abort`
@@ -39,6 +46,12 @@ requested. Use only a declared fixture and checkpoint protocol; the controller
 cannot determine whether a tap reached the intended app state by itself.
 
 ## Verification
+
+The September 25, 2026 trial installed uiautomator2 3.7.0 in an isolated uv
+environment, but the Floww debug-APK probe stopped at a System UI ANR before
+hierarchy timings could be compared. It is not a production dependency, and no
+speedup has been established. Reevaluate on a stable device before replacing the
+working hierarchy backend.
 
 Run `uv run --project servers/ditto-bridge --locked python -m unittest discover -s servers/ditto-bridge/tests -p 'test_*.py'`,
 `bun test`, `bunx tsc --noEmit`, and `bun run check` from this repository.

@@ -12,6 +12,107 @@ from bridge import BridgeError, MobileController, analyze_package, digest, query
 
 
 class BridgeTests(unittest.TestCase):
+    def test_matching_installed_apk_is_not_reinstalled(self):
+        controller = MobileController()
+        with patch.object(controller, '_assert_installed_apk'), patch.object(controller, '_adb') as adb:
+            self.assertFalse(controller._ensure_installed(Path('app.apk'), 'example.app', 'a' * 64))
+        adb.assert_not_called()
+
+    def test_changed_apk_is_installed_and_verified(self):
+        controller = MobileController()
+        with patch.object(controller, '_assert_installed_apk', side_effect=[
+                BridgeError('installed APK hash differs'), None]) as verify, patch.object(controller, '_adb') as adb:
+            self.assertTrue(controller._ensure_installed(Path('app.apk'), 'example.app', 'a' * 64))
+        adb.assert_called_once_with('install', '-r', 'app.apk', timeout=180)
+        self.assertEqual(verify.call_count, 2)
+
+    def test_hierarchy_commands_share_one_timeout_budget(self):
+        controller = MobileController()
+        with patch.object(controller, '_adb') as adb, patch.object(
+                controller, '_bytes', return_value=b'<hierarchy/>') as read:
+            controller._hierarchy(timeout=0.02)
+        self.assertLessEqual(adb.call_args.kwargs['timeout'], 0.02)
+        self.assertLessEqual(read.call_args.kwargs['timeout'], 0.02)
+
+    def test_target_tap_waits_for_transition_without_repeating_the_lookup(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        with patch.object(controller, '_target', side_effect=[
+                BridgeError('UI target not found: Cycle Tracking'), {'bounds': [10, 20, 90, 60]}]) as target, patch.object(
+                controller, '_adb') as adb, patch('bridge.time.sleep'):
+            controller.perform('tap_target', selector='Cycle Tracking')
+        self.assertEqual(target.call_count, 2)
+        adb.assert_called_once_with('shell', 'input', 'tap', 50, 40)
+
+    def test_saved_replay_rejects_missing_screen_guards_before_acting(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'capture.json'
+            path.write_text(json.dumps({'replay': {'status': 'candidate', 'plan': [
+                {'steps': [{'action': 'tap', 'x': 1, 'y': 2}],
+                 'checkpoint': {'checkpoint_id': 'one'}}]}}))
+            with patch.object(controller, 'perform') as perform:
+                with self.assertRaisesRegex(BridgeError, 'expect'):
+                    controller.run_checkpoints(plan_path=str(path))
+            perform.assert_not_called()
+
+    def test_capture_exports_replay_candidate_and_linked_timings(self):
+        with tempfile.TemporaryDirectory() as root:
+            controller = MobileController()
+            controller.stage = Path(root) / 'stage'
+            controller.stage.mkdir()
+            controller.output = Path(root) / 'export'
+            controller.environment = {'viewport_px': '1080x2400'}
+            controller.receipt = {'server': 'ditto-mobile-control-mcp', 'tool': 'mobile_control', 'limitations': []}
+            controller.target = {'kind': 'emulator', 'id': 'test'}
+            controller.package_sha = 'a' * 64
+            controller.package_name = 'example.app'
+            with patch.object(controller, '_adb', return_value=''), patch.object(
+                    controller, '_environment', return_value=controller.environment), patch.object(
+                    controller, '_assert_app_focus'), patch.object(controller, '_screen', return_value=b'png'):
+                controller.perform('tap', x=1, y=2, step='Open')
+                controller.capture(1, 'one', 'fresh', 'Start', ['Open'], ['png', 'trace'],
+                                   observed_state='Settings')
+                result = controller.finalize()
+            capture = json.loads((Path(result['export_dir']) / 'capture.json').read_text())
+            self.assertEqual(capture['replay']['status'], 'candidate')
+            self.assertEqual(capture['replay']['plan'][0]['steps'][0],
+                             {'action': 'tap', 'x': 1, 'y': 2, 'step': 'Open'})
+            self.assertEqual(capture['timings']['checkpoint_ids'], ['one'])
+            self.assertIn('wall_ms', capture['timings'])
+            self.assertIn('duration_ms', capture['artifacts'][0]['executed_actions'][0])
+
+    def test_saved_guarded_replay_executes_and_exports_new_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            controller = MobileController()
+            controller.stage = Path(root) / 'stage'
+            controller.stage.mkdir()
+            controller.output = Path(root) / 'export'
+            controller.environment = {'viewport_px': '1080x2400'}
+            controller.receipt = {'server': 'ditto-mobile-control-mcp', 'tool': 'mobile_control', 'limitations': []}
+            controller.package_sha = 'a' * 64
+            controller.package_name = 'example.app'
+            source = Path(root) / 'reviewed.json'
+            source.write_text(json.dumps({'plan': [{'expect': 'Settings',
+                'steps': [{'action': 'tap_target', 'selector': 'Continue', 'step': 'Open'}],
+                'checkpoint': {'number': 1, 'checkpoint_id': 'one', 'fixture': 'fresh',
+                    'setup': 'Start', 'actions': ['Open'], 'kinds': ['png', 'trace'],
+                    'observed_state': 'Settings visible; inspect captured image'}}]}))
+            xml = b'<hierarchy><node text="Continue" bounds="[0,0][10,10]"/><node text="Settings" bounds="[0,20][20,40]"/></hierarchy>'
+            with patch.object(controller, '_hierarchy', return_value=xml), patch.object(
+                    controller, '_adb') as adb, patch.object(controller, '_assert_app_focus'), patch.object(
+                    controller, '_environment', return_value=controller.environment), patch.object(
+                    controller, '_screen', return_value=b'png'):
+                result = controller.run_checkpoints(plan_path=str(source))
+                exported = controller.finalize()
+            self.assertEqual(result['completed'], ['one'])
+            adb.assert_called_once_with('shell', 'input', 'tap', 5, 5)
+            receipt = json.loads((Path(exported['export_dir']) / 'capture.json').read_text())
+            self.assertEqual(receipt['replay']['plan'][0]['expect'], 'Settings')
+            self.assertEqual(receipt['replay']['status'], 'candidate')
+            self.assertTrue((Path(exported['export_dir']) / '001_one.png').exists())
+
     def test_analyzer_failure_cannot_export_healthy_receipt(self):
         with tempfile.TemporaryDirectory() as root:
             apk = Path(root) / 'sample.apk'
@@ -251,7 +352,7 @@ class BridgeTests(unittest.TestCase):
         with patch.object(controller, 'inspect_ui', return_value={'nodes': []}), patch.object(
                 controller, '_adb') as adb:
             with self.assertRaisesRegex(BridgeError, 'step 1'):
-                controller.replay([{'action': 'tap_target', 'selector': 'Missing'}])
+                controller.replay([{'action': 'tap_target', 'selector': 'Missing', 'target_timeout_ms': 1}])
         adb.assert_not_called()
 
     def test_run_checkpoints_keeps_completed_capture_on_later_failure(self):
@@ -269,9 +370,11 @@ class BridgeTests(unittest.TestCase):
     def test_run_checkpoints_waits_for_transition_before_capture(self):
         controller = MobileController()
         controller.stage = Path(tempfile.gettempdir())
+        def saved(**checkpoint):
+            controller.replay_plan.append({'checkpoint': checkpoint})
         with patch.object(controller, '_target', side_effect=[
                 BridgeError('UI target not found: Periods'), {'bounds': [1, 2, 3, 4]}]) as target, patch.object(
-                controller, 'capture', return_value={'checkpoint_id': 'periods'}) as capture, patch(
+                controller, 'capture', side_effect=saved) as capture, patch(
                 'bridge.time.sleep'):
             result = controller.run_checkpoints([{
                 'expect': 'Periods',
@@ -280,6 +383,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(result['completed'], ['periods'])
         self.assertEqual(target.call_count, 2)
         capture.assert_called_once_with(checkpoint_id='periods')
+        self.assertEqual(controller.replay_plan[0]['expect'], 'Periods')
 
     def test_recover_keeps_completed_checkpoints_and_discards_incomplete_actions(self):
         controller = MobileController()

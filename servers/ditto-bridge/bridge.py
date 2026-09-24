@@ -1,5 +1,6 @@
 """Package-bound Ditto MCP backend. CLIs are invoked only inside the MCP server."""
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -333,16 +334,40 @@ class MobileController:
         self.apk_path = None
         self.records = []
         self.actions = []
+        self.replay_plan = []
+        self._reset_timings()
+
+    def _reset_timings(self):
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.started_clock = time.monotonic()
+        self.command_timings = {}
+
+    @contextmanager
+    def _measure_command(self, args):
+        kind = 'install' if args[0] == 'install' else {
+            ('exec-out', 'screencap'): 'screenshot', ('shell', 'uiautomator'): 'hierarchy',
+            ('shell', 'input'): 'input'}.get(args[:2], 'device_checks')
+        if args == ('exec-out', 'cat', '/sdcard/ditto-hierarchy.xml'):
+            kind = 'hierarchy'
+        start = time.monotonic()
+        try:
+            yield
+        finally:
+            metric = self.command_timings.setdefault(kind, {'calls': 0, 'duration_ms': 0})
+            metric['calls'] += 1
+            metric['duration_ms'] += (time.monotonic() - start) * 1000
 
     def _adb(self, *args, timeout=60):
         if not self.serial:
             raise BridgeError('probe an emulator before using mobile control')
-        return run([self.adb, '-s', self.serial, *map(str, args)], timeout=timeout)
+        with self._measure_command(args):
+            return run([self.adb, '-s', self.serial, *map(str, args)], timeout=timeout)
 
     def _bytes(self, *args, timeout=60):
         try:
-            result = subprocess.run([self.adb, '-s', self.serial, *map(str, args)],
-                                    capture_output=True, timeout=timeout, check=False)
+            with self._measure_command(args):
+                result = subprocess.run([self.adb, '-s', self.serial, *map(str, args)],
+                                        capture_output=True, timeout=timeout, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise BridgeError(f'ADB backend failed: {error}') from None
         if result.returncode != 0 or not result.stdout:
@@ -368,21 +393,25 @@ class MobileController:
             raise BridgeError('emulator screenshot is not PNG')
         return shot
 
-    def _hierarchy(self):
-        self._adb('shell', 'uiautomator', 'dump', '/sdcard/ditto-hierarchy.xml')
-        xml = self._bytes('exec-out', 'cat', '/sdcard/ditto-hierarchy.xml')
+    def _hierarchy(self, timeout=60):
+        deadline = time.monotonic() + timeout
+        self._adb('shell', 'uiautomator', 'dump', '/sdcard/ditto-hierarchy.xml', timeout=timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise BridgeError('UI hierarchy timed out')
+        xml = self._bytes('exec-out', 'cat', '/sdcard/ditto-hierarchy.xml', timeout=remaining)
         if b'<hierarchy' not in xml:
             raise BridgeError('emulator hierarchy export is invalid')
         return xml
 
-    def inspect_ui(self, query='', limit=60):
+    def inspect_ui(self, query='', limit=60, timeout=60):
         """Return bounded UI labels and bounds without sending another screenshot."""
         if self.stage is None and not self.preview_mode:
             raise BridgeError('begin capture or preview before inspecting UI')
         if not isinstance(query, str) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise BridgeError('UI query or limit is invalid')
         try:
-            root = ET.fromstring(self._hierarchy())
+            root = ET.fromstring(self._hierarchy(timeout=timeout))
         except ET.ParseError as error:
             raise BridgeError(f'emulator hierarchy is malformed: {error}') from None
         nodes = []
@@ -407,10 +436,10 @@ class MobileController:
                 break
         return {'nodes': nodes, 'truncated': len(nodes) >= limit}
 
-    def _target(self, selector, match='exact'):
+    def _target(self, selector, match='exact', timeout=60):
         if not isinstance(selector, str) or not selector.strip() or match not in ('exact', 'contains'):
             raise BridgeError('target selector or match mode is invalid')
-        nodes = self.inspect_ui(selector, limit=100)['nodes']
+        nodes = self.inspect_ui(selector, limit=100, timeout=timeout)['nodes']
         def selected(node):
             values = (node['text'], node['description'], node['resource_id'])
             return any((selector.casefold() == value.casefold() if match == 'exact'
@@ -431,7 +460,10 @@ class MobileController:
         deadline = time.monotonic() + duration_ms / 1000
         while True:
             try:
-                return self._target(selector, match)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise BridgeError(f'UI target wait timed out: {selector}')
+                return self._target(selector, match, timeout=remaining)
             except BridgeError as error:
                 if 'not found' not in str(error) or time.monotonic() >= deadline:
                     raise
@@ -499,8 +531,7 @@ class MobileController:
             raise BridgeError('requested package name differs from supplied APK')
         package_sha = digest(apk)
         self._identity(serial, target_id)
-        self._adb('install', '-r', str(apk), timeout=180)
-        self._assert_installed_apk(package_name, package_sha)
+        self._ensure_installed(apk, package_name, package_sha)
         launched = self._adb('shell', 'monkey', '-p', package_name, '1')
         if 'Events injected: 1' not in launched:
             raise BridgeError('emulator could not launch the installed package')
@@ -556,11 +587,11 @@ class MobileController:
         output = Path(output_dir).expanduser().absolute()
         if output.exists() or self.stage is not None or self.preview_mode:
             raise BridgeError('capture output exists or another capture is active')
+        self._reset_timings()
         self._identity(serial, self.target['id'])
         self.environment = self._environment()
-        self._adb('install', '-r', str(apk), timeout=180)
         package_sha = digest(apk)
-        self._assert_installed_apk(package_name, package_sha)
+        installed = self._ensure_installed(apk, package_name, package_sha)
         self._adb('shell', 'am', 'force-stop', package_name)
         launched = self._adb('shell', 'monkey', '-p', package_name, '1')
         if 'Events injected: 1' not in launched:
@@ -574,8 +605,18 @@ class MobileController:
         self.apk_path = apk
         self.records = []
         self.actions = []
+        self.replay_plan = []
         return {'installed_package_sha256': self.package_sha,
-                'target': self.target, 'session_id': SESSION_ID}
+                'target': self.target, 'session_id': SESSION_ID, 'installed': installed}
+
+    def _ensure_installed(self, apk, package_name, package_sha):
+        try:
+            self._assert_installed_apk(package_name, package_sha)
+            return False
+        except BridgeError:
+            self._adb('install', '-r', str(apk), timeout=180)
+            self._assert_installed_apk(package_name, package_sha)
+            return True
 
     def preview_begin(self, serial, target_id, package_name):
         """Control a running debug app without installation or evidence export."""
@@ -596,23 +637,28 @@ class MobileController:
                 'evidence_eligible': False}
 
     def perform(self, action, x=None, y=None, end_x=None, end_y=None,
-                text=None, duration_ms=300, step=None, selector=None, match='exact'):
+                text=None, duration_ms=300, step=None, selector=None, match='exact',
+                target_timeout_ms=5000):
         if self.stage is None and not self.preview_mode:
             raise BridgeError('begin capture or preview before UI actions')
         if step is not None and (not isinstance(step, str) or not step.strip()):
             raise BridgeError('protocol step must be a nonempty string')
+        start = time.monotonic()
+        started_at = datetime.now(timezone.utc).isoformat()
         arguments = {}
         if action == 'tap' and x is not None and y is not None:
             arguments = {'x': int(x), 'y': int(y)}
             self._adb('shell', 'input', 'tap', int(x), int(y))
         elif action == 'tap_target':
-            target = self._target(selector, match)
+            target = self._wait_target(selector, match, target_timeout_ms)
             left, top, right, bottom = target['bounds']
             self._adb('shell', 'input', 'tap', (left + right) // 2, (top + bottom) // 2)
-            arguments = {'selector': selector, 'match': match, 'bounds': target['bounds']}
+            arguments = {'selector': selector, 'match': match, 'bounds': target['bounds'],
+                         'target_timeout_ms': target_timeout_ms}
         elif action == 'wait_target':
             target = self._wait_target(selector, match, duration_ms)
-            arguments = {'selector': selector, 'match': match, 'bounds': target['bounds']}
+            arguments = {'selector': selector, 'match': match, 'bounds': target['bounds'],
+                         'duration_ms': duration_ms}
         elif action == 'type' and isinstance(text, str) and text:
             if not re.fullmatch(r'[A-Za-z0-9 @.,_+:/=-]+', text):
                 raise BridgeError('ADB text input supports simple ASCII fixtures; this text needs a Unicode input backend')
@@ -648,6 +694,7 @@ class MobileController:
             raise BridgeError('unsupported or incomplete UI action')
         event = {'action': action, 'arguments': arguments, 'step': step,
                  'result': 'command_executed',
+                 'started_at': started_at, 'duration_ms': round((time.monotonic() - start) * 1000, 2),
                  'at': datetime.now(timezone.utc).isoformat()}
         if self.stage is not None:
             self.actions.append(event)
@@ -657,7 +704,7 @@ class MobileController:
         if not isinstance(steps, list) or not 1 <= len(steps) <= 100:
             raise BridgeError('replay requires 1..100 action objects')
         allowed = {'action', 'x', 'y', 'end_x', 'end_y', 'text', 'duration_ms',
-                   'step', 'selector', 'match'}
+                   'step', 'selector', 'match', 'target_timeout_ms'}
         if any(not isinstance(item, dict) or 'action' not in item or set(item) - allowed
                for item in steps):
             raise BridgeError('replay contains an invalid action object')
@@ -669,10 +716,21 @@ class MobileController:
                 raise BridgeError(f'replay stopped at step {index + 1}: {error}') from error
         return {'executed': len(steps), 'observation_required': True}
 
-    def run_checkpoints(self, plan):
+    def run_checkpoints(self, plan=None, plan_path=None):
         """Replay verified steps and retain completed checkpoints if a later step fails."""
         if self.stage is None:
             raise BridgeError('begin capture before running checkpoints')
+        if plan_path:
+            if plan is not None:
+                raise BridgeError('supply plan or plan_path, not both')
+            saved = json.loads(Path(plan_path).expanduser().read_text(encoding='utf-8'))
+            replay = saved.get('replay', saved) if isinstance(saved, dict) else None
+            if not isinstance(replay, dict):
+                raise BridgeError('saved replay must be an object containing plan')
+            plan = replay.get('plan')
+            if not isinstance(plan, list) or any(not isinstance(item, dict)
+                    or not isinstance(item.get('expect'), str) or not item['expect'].strip() for item in plan):
+                raise BridgeError('saved replay needs a reviewed unique expect marker for every checkpoint')
         if not isinstance(plan, list) or not 1 <= len(plan) <= 100:
             raise BridgeError('checkpoint plan requires 1..100 entries')
         completed = []
@@ -688,6 +746,9 @@ class MobileController:
                     self._wait_target(item['expect'], item.get('match', 'exact'),
                                       item.get('expect_timeout_ms', 5000))
                 self.capture(**checkpoint)
+                if 'expect' in item:
+                    self.replay_plan[-1].update({key: item[key] for key in
+                        ('expect', 'match', 'expect_timeout_ms') if key in item})
             except (BridgeError, TypeError) as error:
                 return {'completed': completed, 'stopped_at': identifier,
                         'error': str(error), 'capture_active': self.stage is not None}
@@ -701,11 +762,7 @@ class MobileController:
         self._identity(self.serial, self.target['id'])
         if self._environment() != self.environment:
             raise BridgeError('replacement emulator environment differs from capture')
-        try:
-            self._assert_installed_apk(self.package_name, self.package_sha)
-        except BridgeError:
-            self._adb('install', '-r', str(self.apk_path), timeout=180)
-            self._assert_installed_apk(self.package_name, self.package_sha)
+        self._ensure_installed(self.apk_path, self.package_name, self.package_sha)
         self._adb('shell', 'am', 'force-stop', self.package_name)
         self._adb('shell', 'monkey', '-p', self.package_name, '1')
         self.actions = []
@@ -776,6 +833,18 @@ class MobileController:
                 'observation_source': observation_source,
             })
         self.records.extend(records)
+        steps = []
+        for event in self.actions:
+            step = {'action': event['action'], **{key: value for key, value in
+                    event['arguments'].items() if key != 'bounds'}}
+            if event.get('replay_selector'):
+                step = {'action': 'tap_target', 'selector': event['replay_selector']}
+            if event.get('step'):
+                step['step'] = event['step']
+            steps.append(step)
+        self.replay_plan.append({'steps': steps, 'checkpoint': {
+            'number': number, 'checkpoint_id': checkpoint_id, 'fixture': fixture,
+            'setup': setup, 'actions': actions, 'kinds': kinds, 'observed_state': observed_state}})
         self.actions = []
         return {'checkpoint_id': checkpoint_id,
                 'artifacts': [{key: record[key] for key in ('kind', 'path', 'sha256')}
@@ -802,12 +871,15 @@ class MobileController:
         self.stage = self.output = None
         self.preview_mode = False
         self.records, self.actions = [], []
+        self.replay_plan = []
         self.release_device()
         return {'aborted': True}
 
     def finalize(self):
         if self.stage is None or not self.records:
             raise BridgeError('no active captured checkpoints to finalize')
+        wall_ms = (time.monotonic() - self.started_clock) * 1000
+        adb_ms = sum(item['duration_ms'] for item in self.command_timings.values())
         capture = {
             'schema_version': 1, 'provenance': 'mcp',
             'server': self.receipt['server'], 'tool': self.receipt['tool'],
@@ -817,6 +889,11 @@ class MobileController:
             'installed_package_sha256': self.package_sha,
             'captured_at': datetime.now(timezone.utc).isoformat(),
             'artifacts': self.records,
+            'replay': {'status': 'candidate', 'plan': self.replay_plan},
+            'timings': {'started_at': self.started_at, 'wall_ms': round(wall_ms, 2),
+                        'adb_ms': round(adb_ms, 2), 'other_ms': round(max(0, wall_ms - adb_ms), 2),
+                        'commands': self.command_timings,
+                        'checkpoint_ids': list(dict.fromkeys(item['checkpoint_id'] for item in self.records))},
         }
         write_json(self.stage / 'capture.json', capture)
         os.replace(self.stage, self.output)
@@ -824,6 +901,7 @@ class MobileController:
         self.stage = self.output = None
         self.records = []
         self.actions = []
+        self.replay_plan = []
         return {'export_dir': output, 'checkpoint_count': len({
             record['checkpoint_id'] for record in capture['artifacts']}),
             'capture_sha256': digest(Path(output) / 'capture.json')}
