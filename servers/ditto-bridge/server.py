@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 
 from bridge import MOBILE, analyze_package as run_analysis, query_analysis as query_export
+from recorder import Recorder
 
 ROLE = os.environ.get('DITTO_ROLE', '')
 if ROLE not in ('jadx', 'apktool', 'r2flutter', 'mobile-control'):
@@ -17,6 +18,7 @@ if ROLE not in ('jadx', 'apktool', 'r2flutter', 'mobile-control'):
 
 mcp = FastMCP(f'Ditto {ROLE} local bridge')
 controller_lock = threading.RLock()
+RECORDER = None
 
 if ROLE == 'mobile-control':
     @mcp.tool()
@@ -30,7 +32,7 @@ if ROLE == 'mobile-control':
         seconds for Android boot, not app readiness. Never clears app data.
         """
         with controller_lock:
-            if MOBILE.stage is not None:
+            if MOBILE.stage is not None and operation == 'stop':
                 raise ValueError('finalize or abort the active capture before managing its emulator')
             env = {**os.environ, 'DITTO_AVD': avd, 'DITTO_EMULATOR_PORT': str(port),
                    'DITTO_GPU': gpu, 'DITTO_ACCEL': accel, 'DITTO_BOOT_TIMEOUT': '300'}
@@ -49,33 +51,79 @@ if ROLE == 'mobile-control':
             return Image(data=MOBILE._screen(), format='png')
 
     @mcp.tool()
-    def mobile_control(operation: Literal['probe', 'begin', 'perform', 'replay', 'capture', 'finalize', 'abort'], serial: str | None = None,
+    def inspect_ui(query: str = '', limit: int = 60) -> dict:
+        """Read compact visible labels, resource IDs, and bounds without image output."""
+        with controller_lock:
+            return MOBILE.inspect_ui(query, limit)
+
+    @mcp.tool()
+    def recorder_control(operation: Literal['start', 'status', 'stop'],
+                         contract_path: str | None = None) -> dict:
+        """Open/close a localhost still-image panel for human original capture.
+
+        Begin a package-bound mobile capture first. Human clicks in the panel
+        use the same controller and receipt; no video or cloud service is used.
+        """
+        global RECORDER
+        with controller_lock:
+            if operation == 'start':
+                if RECORDER is not None:
+                    raise ValueError('stop the existing recorder before starting another')
+                if not contract_path:
+                    raise ValueError('contract_path is required')
+                RECORDER = Recorder(MOBILE, contract_path, controller_lock)
+                try:
+                    return {'url': RECORDER.start(), 'phase_id': RECORDER.contract['phase_id']}
+                except Exception:
+                    RECORDER = None
+                    raise
+            if operation == 'status':
+                return {'active': RECORDER is not None,
+                        'url': RECORDER.url if RECORDER is not None else None}
+            if operation == 'stop':
+                if RECORDER is not None:
+                    RECORDER.stop()
+                    RECORDER = None
+                return {'active': False}
+            raise ValueError('unknown recorder operation')
+
+    @mcp.tool()
+    def mobile_control(operation: Literal['probe', 'begin', 'perform', 'replay', 'run_checkpoints', 'capture', 'recover', 'finalize', 'abort'], serial: str | None = None,
                        target_id: str | None = None, apk_path: str | None = None,
                        package_name: str | None = None,
-                       output_dir: str | None = None, action: Literal['tap', 'type', 'swipe', 'back', 'launch', 'stop', 'restart', 'reset', 'wait'] | None = None,
+                       output_dir: str | None = None, action: Literal['tap', 'tap_target', 'wait_target', 'type', 'swipe', 'back', 'launch', 'stop', 'restart', 'reset', 'wait'] | None = None,
                        x: int | None = None, y: int | None = None,
                        end_x: int | None = None, end_y: int | None = None,
                        text: str | None = None, duration_ms: int = 300,
+                       selector: str | None = None, match: Literal['exact', 'contains'] = 'exact',
                        step: str | None = None, number: int | None = None,
                        checkpoint_id: str | None = None,
                        fixture: str | None = None, setup: str | None = None,
                        actions: list[str] | None = None,
                        kinds: list[Literal['png', 'xml', 'trace', 'state']] | None = None,
                        observed_state: str | None = None,
-                       steps: list[dict] | None = None) -> dict:
+                       steps: list[dict] | None = None,
+                       plan: list[dict] | None = None) -> dict:
         """Probe, begin, perform, replay, capture, finalize, or abort a local emulator session.
 
         Probe: serial, target_id (AVD name), apk_path, package_name, output_dir.
         Begin: serial, apk_path, package_name, output_dir; acquires exclusive device ownership.
-        Perform: action tap/type/swipe/back/launch/stop/restart/reset/wait plus arguments.
+        Perform: action tap/tap_target/wait_target/type/swipe/back/launch/stop/restart/reset/wait.
         Label contract actions with step; reset clears this app's data, use only for declared fixtures.
         Replay: steps (1..100 perform argument objects); stops on the first failure.
+        run_checkpoints: plan entries contain steps, optional expected UI target,
+        and checkpoint capture fields. Stops with completed IDs on a mismatch.
+        Recover: after restarting the same emulator, verify package/environment,
+        retain completed checkpoints, and replay navigation to the failed state.
         Capture: number, checkpoint_id, fixture, setup, actions, kinds, observed_state.
         actions must equal executed step labels in order. observed_state is the agent's
         observation, to be checked against PNG/XML; command success alone is not UI success.
         Finalize retains capture; abort discards incomplete capture. Both release ownership.
         """
         with controller_lock:
+            if RECORDER is not None and operation in ('perform', 'replay', 'run_checkpoints',
+                                                      'capture', 'finalize', 'abort'):
+                raise ValueError('stop the human recorder before AI-driven capture')
             if operation in ('probe', 'begin'):
                 if not serial:
                     raise ValueError('serial is required')
@@ -91,9 +139,14 @@ if ROLE == 'mobile-control':
                     if operation == 'probe':
                         MOBILE.release_device()
             if operation == 'perform':
-                return MOBILE.perform(action, x, y, end_x, end_y, text, duration_ms, step)
+                return MOBILE.perform(action, x, y, end_x, end_y, text,
+                                      duration_ms, step, selector, match)
             if operation == 'replay':
                 return MOBILE.replay(steps)
+            if operation == 'run_checkpoints':
+                return MOBILE.run_checkpoints(plan)
+            if operation == 'recover':
+                return MOBILE.recover()
             if operation == 'capture':
                 return MOBILE.capture(number, checkpoint_id, fixture, setup,
                                       actions, kinds, observed_state)
@@ -103,7 +156,7 @@ if ROLE == 'mobile-control':
                 return result
             if operation == 'abort':
                 return MOBILE.abort()
-            raise ValueError('operation must be probe, begin, perform, replay, capture, finalize, or abort')
+            raise ValueError('unknown mobile-control operation')
 else:
     @mcp.tool()
     def analyze_package(apk_path: str, output_dir: str) -> dict:

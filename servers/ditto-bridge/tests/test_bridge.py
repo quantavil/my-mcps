@@ -145,6 +145,27 @@ class BridgeTests(unittest.TestCase):
                     run.assert_not_called()
         asyncio.run(check())
 
+    def test_mobile_mcp_exposes_compact_ui_and_checkpoint_runner(self):
+        import asyncio
+        import importlib.util
+        import os
+        from fastmcp import Client
+        spec = importlib.util.spec_from_file_location(
+            'ditto_mobile_server_test', Path(__file__).resolve().parent.parent / 'server.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {'DITTO_ROLE': 'mobile-control'}):
+            spec.loader.exec_module(module)
+        async def check():
+            async with Client(module.mcp) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                self.assertIn('inspect_ui', tools)
+                self.assertIn('recorder_control', tools)
+                with patch.object(module.MOBILE, 'run_checkpoints', return_value={
+                        'completed': ['one'], 'stopped_at': None}):
+                    await client.call_tool('mobile_control', {'operation': 'run_checkpoints',
+                        'plan': [{'steps': [], 'checkpoint': {'checkpoint_id': 'one'}}]})
+        asyncio.run(check())
+
     def test_mobile_probe_rejects_anr_and_wrong_app_focus(self):
         controller = MobileController()
         for focus in ('Application Not Responding: com.android.systemui',
@@ -168,6 +189,91 @@ class BridgeTests(unittest.TestCase):
                 controller._wait_for_app_focus('com.example.app', seconds=0.01)
         self.assertTrue(observed)
         self.assertLessEqual(max(observed), 0.01)
+
+    def test_inspect_ui_returns_compact_matching_nodes(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        xml = (b'<hierarchy><node text="" content-desc="" bounds="[0,0][100,100]" '
+               b'clickable="false"><node text="Confirm" content-desc="" '
+               b'resource-id="next" bounds="[10,20][90,60]" clickable="true" '
+               b'package="example.app"/></node></hierarchy>')
+        with patch.object(controller, '_hierarchy', return_value=xml):
+            result = controller.inspect_ui('Confirm')
+        self.assertEqual(len(result['nodes']), 1)
+        self.assertEqual(result['nodes'][0]['text'], 'Confirm')
+        self.assertEqual(result['nodes'][0]['bounds'], [10, 20, 90, 60])
+
+    def test_tap_target_uses_unique_ui_node_and_records_selector(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        xml = (b'<hierarchy><node text="Confirm" content-desc="" '
+               b'bounds="[10,20][90,60]" clickable="true"/></hierarchy>')
+        with patch.object(controller, '_hierarchy', return_value=xml), patch.object(
+                controller, '_adb', return_value='') as adb:
+            event = controller.perform('tap_target', selector='Confirm', step='Confirm setup')
+        adb.assert_called_once_with('shell', 'input', 'tap', 50, 40)
+        self.assertEqual(event['arguments']['selector'], 'Confirm')
+
+    def test_replay_stops_before_tap_if_expected_ui_is_absent(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        with patch.object(controller, 'inspect_ui', return_value={'nodes': []}), patch.object(
+                controller, '_adb') as adb:
+            with self.assertRaisesRegex(BridgeError, 'step 1'):
+                controller.replay([{'action': 'tap_target', 'selector': 'Missing'}])
+        adb.assert_not_called()
+
+    def test_run_checkpoints_keeps_completed_capture_on_later_failure(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        with patch.object(controller, 'replay', side_effect=[{'executed': 1}, BridgeError('missing target')]), patch.object(
+                controller, 'capture', return_value={'checkpoint_id': 'first', 'artifacts': []}):
+            result = controller.run_checkpoints([
+                {'steps': [{'action': 'tap', 'x': 1, 'y': 1}], 'checkpoint': {'checkpoint_id': 'first'}},
+                {'steps': [{'action': 'tap', 'x': 2, 'y': 2}], 'checkpoint': {'checkpoint_id': 'second'}},
+            ])
+        self.assertEqual(result['completed'], ['first'])
+        self.assertEqual(result['stopped_at'], 'second')
+
+    def test_recover_keeps_completed_checkpoints_and_discards_incomplete_actions(self):
+        controller = MobileController()
+        controller.stage = Path(tempfile.gettempdir())
+        controller.serial = 'emulator-5554'
+        controller.target = {'kind': 'emulator', 'id': 'floww_fresh'}
+        controller.environment = {'viewport_px': '1080x2400'}
+        controller.package_name = 'example.app'
+        controller.package_sha = 'a' * 64
+        controller.apk_path = Path('/tmp/example.apk')
+        controller.records = [{'checkpoint_id': 'first'}]
+        controller.actions = [{'action': 'tap'}]
+        with patch.object(controller, '_identity'), patch.object(
+                controller, '_environment', return_value=controller.environment), patch.object(
+                controller, '_assert_installed_apk'), patch.object(controller, '_adb', return_value=''):
+            result = controller.recover()
+        self.assertEqual(result['completed'], ['first'])
+        self.assertEqual(controller.actions, [])
+        self.assertEqual(len(controller.records), 1)
+
+    def test_capture_returns_compact_receipt_while_retaining_full_trace(self):
+        with tempfile.TemporaryDirectory() as root:
+            controller = MobileController()
+            controller.stage = Path(root)
+            controller.environment = {'viewport_px': '1080x2400'}
+            controller.receipt = {'server': 'ditto-mobile-control-mcp',
+                                  'tool': 'mobile_control', 'limitations': []}
+            controller.target = {'kind': 'emulator', 'id': 'test'}
+            controller.package_sha = 'a' * 64
+            controller.package_name = 'example.app'
+            controller.actions = [{'action': 'tap', 'step': 'Open',
+                                   'arguments': {'x': 1, 'y': 2}}]
+            with patch.object(controller, '_environment', return_value=controller.environment), patch.object(
+                    controller, '_assert_app_focus'), patch.object(controller, '_screen',
+                    return_value=b'\x89PNG\r\n\x1a\nimage'):
+                response = controller.capture(1, 'first', 'fresh', 'Start', ['Open'],
+                                              ['png', 'trace'], observed_state='First screen')
+            self.assertNotIn('executed_actions', response['artifacts'][0])
+            trace = json.loads((Path(root) / '001_first.trace').read_text())
+            self.assertEqual(trace['actions'][0]['step'], 'Open')
 
 
 if __name__ == '__main__':

@@ -12,6 +12,7 @@ import time
 import tomllib
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 
 from portable import command as tool_command, sdk_tool, DeviceLease
 
@@ -328,6 +329,7 @@ class MobileController:
         self.output = None
         self.package_sha = None
         self.package_name = None
+        self.apk_path = None
         self.records = []
         self.actions = []
 
@@ -371,6 +373,56 @@ class MobileController:
         if b'<hierarchy' not in xml:
             raise BridgeError('emulator hierarchy export is invalid')
         return xml
+
+    def inspect_ui(self, query='', limit=60):
+        """Return bounded UI labels and bounds without sending another screenshot."""
+        if self.stage is None:
+            raise BridgeError('begin capture before inspecting UI')
+        if not isinstance(query, str) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise BridgeError('UI query or limit is invalid')
+        try:
+            root = ET.fromstring(self._hierarchy())
+        except ET.ParseError as error:
+            raise BridgeError(f'emulator hierarchy is malformed: {error}') from None
+        nodes = []
+        for element in root.iter('node'):
+            attrs = element.attrib
+            label = attrs.get('text', '') or attrs.get('content-desc', '')
+            resource_id = attrs.get('resource-id', '')
+            if not label and not resource_id:
+                continue
+            if query and not any(query.casefold() in value.casefold()
+                                 for value in (label, resource_id)):
+                continue
+            bounds = [int(value) for value in re.findall(r'\d+', attrs.get('bounds', ''))]
+            if len(bounds) != 4:
+                continue
+            nodes.append({'text': attrs.get('text', '')[:240],
+                          'description': attrs.get('content-desc', '')[:240],
+                          'resource_id': resource_id[:240],
+                          'bounds': bounds, 'clickable': attrs.get('clickable') == 'true',
+                          'package': attrs.get('package', '')})
+            if len(nodes) >= limit:
+                break
+        return {'nodes': nodes, 'truncated': len(nodes) >= limit}
+
+    def _target(self, selector, match='exact'):
+        if not isinstance(selector, str) or not selector.strip() or match not in ('exact', 'contains'):
+            raise BridgeError('target selector or match mode is invalid')
+        nodes = self.inspect_ui(selector, limit=100)['nodes']
+        def selected(node):
+            values = (node['text'], node['description'], node['resource_id'])
+            return any((selector.casefold() == value.casefold() if match == 'exact'
+                        else selector.casefold() in value.casefold()) for value in values if value)
+        matches = [node for node in nodes if selected(node)]
+        clickable = [node for node in matches if node['clickable']]
+        matches = clickable or matches
+        unique = {tuple(node['bounds']): node for node in matches}
+        if not unique:
+            raise BridgeError(f'UI target not found: {selector}')
+        if len(unique) != 1:
+            raise BridgeError(f'UI target is ambiguous: {selector} ({len(unique)} matches)')
+        return next(iter(unique.values()))
 
     def _environment(self):
         viewport = self._adb('shell', 'wm', 'size').strip().split(':')[-1].strip()
@@ -506,13 +558,14 @@ class MobileController:
         self.output = output
         self.package_sha = package_sha
         self.package_name = package_name
+        self.apk_path = apk
         self.records = []
         self.actions = []
         return {'installed_package_sha256': self.package_sha,
                 'target': self.target, 'session_id': SESSION_ID}
 
     def perform(self, action, x=None, y=None, end_x=None, end_y=None,
-                text=None, duration_ms=300, step=None):
+                text=None, duration_ms=300, step=None, selector=None, match='exact'):
         if self.stage is None:
             raise BridgeError('begin capture before UI actions')
         if step is not None and (not isinstance(step, str) or not step.strip()):
@@ -521,6 +574,22 @@ class MobileController:
         if action == 'tap' and x is not None and y is not None:
             arguments = {'x': int(x), 'y': int(y)}
             self._adb('shell', 'input', 'tap', int(x), int(y))
+        elif action == 'tap_target':
+            target = self._target(selector, match)
+            left, top, right, bottom = target['bounds']
+            self._adb('shell', 'input', 'tap', (left + right) // 2, (top + bottom) // 2)
+            arguments = {'selector': selector, 'match': match, 'bounds': target['bounds']}
+        elif action == 'wait_target' and 0 < duration_ms <= 30000:
+            deadline = time.monotonic() + duration_ms / 1000
+            while True:
+                try:
+                    target = self._target(selector, match)
+                    break
+                except BridgeError as error:
+                    if 'not found' not in str(error) or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+            arguments = {'selector': selector, 'match': match, 'bounds': target['bounds']}
         elif action == 'type' and isinstance(text, str) and text:
             if not re.fullmatch(r'[A-Za-z0-9 @.,_+:/=-]+', text):
                 raise BridgeError('ADB text input supports simple ASCII fixtures; this text needs a Unicode input backend')
@@ -563,7 +632,8 @@ class MobileController:
     def replay(self, steps):
         if not isinstance(steps, list) or not 1 <= len(steps) <= 100:
             raise BridgeError('replay requires 1..100 action objects')
-        allowed = {'action', 'x', 'y', 'end_x', 'end_y', 'text', 'duration_ms', 'step'}
+        allowed = {'action', 'x', 'y', 'end_x', 'end_y', 'text', 'duration_ms',
+                   'step', 'selector', 'match'}
         if any(not isinstance(item, dict) or 'action' not in item or set(item) - allowed
                for item in steps):
             raise BridgeError('replay contains an invalid action object')
@@ -575,7 +645,48 @@ class MobileController:
                 raise BridgeError(f'replay stopped at step {index + 1}: {error}') from error
         return {'executed': len(steps), 'observation_required': True}
 
-    def capture(self, number, checkpoint_id, fixture, setup, actions, kinds, observed_state=None):
+    def run_checkpoints(self, plan):
+        """Replay verified steps and retain completed checkpoints if a later step fails."""
+        if not isinstance(plan, list) or not 1 <= len(plan) <= 100:
+            raise BridgeError('checkpoint plan requires 1..100 entries')
+        completed = []
+        for item in plan:
+            if not isinstance(item, dict) or not isinstance(item.get('checkpoint'), dict):
+                raise BridgeError('checkpoint plan entry is invalid')
+            checkpoint = item['checkpoint']
+            identifier = checkpoint.get('checkpoint_id')
+            try:
+                if item.get('steps'):
+                    self.replay(item['steps'])
+                if item.get('expect'):
+                    self._target(item['expect'], item.get('match', 'exact'))
+                self.capture(**checkpoint)
+            except (BridgeError, TypeError) as error:
+                return {'completed': completed, 'stopped_at': identifier,
+                        'error': str(error), 'capture_active': self.stage is not None}
+            completed.append(identifier)
+        return {'completed': completed, 'stopped_at': None, 'capture_active': True}
+
+    def recover(self):
+        """Resume after device replacement within the same MCP process."""
+        if self.stage is None or self.apk_path is None:
+            raise BridgeError('no active capture to recover')
+        self._identity(self.serial, self.target['id'])
+        if self._environment() != self.environment:
+            raise BridgeError('replacement emulator environment differs from capture')
+        try:
+            self._assert_installed_apk(self.package_name, self.package_sha)
+        except BridgeError:
+            self._adb('install', '-r', str(self.apk_path), timeout=180)
+            self._assert_installed_apk(self.package_name, self.package_sha)
+        self._adb('shell', 'am', 'force-stop', self.package_name)
+        self._adb('shell', 'monkey', '-p', self.package_name, '1')
+        self.actions = []
+        return {'completed': list(dict.fromkeys(record['checkpoint_id'] for record in self.records)),
+                'replay_required': True, 'capture_active': True}
+
+    def capture(self, number, checkpoint_id, fixture, setup, actions, kinds,
+                observed_state=None, observation_source='agent'):
         if self.stage is None:
             raise BridgeError('begin capture before checkpoint capture')
         if (not isinstance(number, int) or not 1 <= number <= 999
@@ -598,6 +709,8 @@ class MobileController:
             raise BridgeError('declared action protocol differs from executed steps')
         if not isinstance(observed_state, str) or not observed_state.strip():
             raise BridgeError('capture needs an observed_state description to review against the image')
+        if observation_source not in ('agent', 'human_recorder'):
+            raise BridgeError('unknown observation source')
         if self._environment() != self.environment:
             raise BridgeError('capture environment changed; begin a new session and restore matching settings')
         if 'trace' in kinds and not self.actions:
@@ -611,7 +724,8 @@ class MobileController:
             data['xml'] = self._hierarchy()
         if 'trace' in kinds:
             data['trace'] = (json.dumps({'actions': self.actions, 'observed_state': observed_state,
-                                        'observation_source': 'agent; verify against PNG/XML'}, indent=2)
+                                        'observation_source': observation_source,
+                                        'verify_against': 'PNG/XML'}, indent=2)
                              + '\n').encode()
         if 'state' in kinds:
             state = {'limitation': 'foreground activity only; persistence needs before/after restart evidence',
@@ -632,10 +746,13 @@ class MobileController:
                 'fixture': fixture, 'setup_sha256': digest_json(setup),
                 'actions_sha256': digest_json(executed),
                 'executed_actions': list(self.actions), 'observed_state': observed_state,
+                'observation_source': observation_source,
             })
         self.records.extend(records)
         self.actions = []
-        return {'checkpoint_id': checkpoint_id, 'artifacts': records}
+        return {'checkpoint_id': checkpoint_id,
+                'artifacts': [{key: record[key] for key in ('kind', 'path', 'sha256')}
+                              for record in records]}
 
     def acquire_device(self, serial):
         if self.lease is not None:
@@ -679,7 +796,9 @@ class MobileController:
         self.stage = self.output = None
         self.records = []
         self.actions = []
-        return {'export_dir': output, 'capture': capture}
+        return {'export_dir': output, 'checkpoint_count': len({
+            record['checkpoint_id'] for record in capture['artifacts']}),
+            'capture_sha256': digest(Path(output) / 'capture.json')}
 
 
 MOBILE = MobileController()
