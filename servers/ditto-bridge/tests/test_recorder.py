@@ -108,6 +108,16 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(len(self.recorder.shots), 1)
         self.assertIsNone(self.recorder.shots[0]['xml'])
         self.assertIn('timeout', self.recorder.shots[0]['warning'])
+        self.assertEqual(self.recorder.status()['xml_saved'], 0)
+
+    def test_status_counts_available_xml_separately_from_saved_screens(self):
+        self.sample()
+        self.assertEqual(self.recorder.status()['saved'], 1)
+        self.assertEqual(self.recorder.status()['xml_saved'], 1)
+        self.mobile._hierarchy.side_effect = RuntimeError('timeout')
+        self.sample(b'next settled screen')
+        self.assertEqual(self.recorder.status()['saved'], 2)
+        self.assertEqual(self.recorder.status()['xml_saved'], 1)
 
     def test_anr_is_retained_as_a_warning_not_an_app_success(self):
         self.mobile._hierarchy.return_value = b"""<hierarchy><node resource-id="android:id/alertTitle" text="System UI isn't responding"/></hierarchy>"""
@@ -172,11 +182,35 @@ class RecorderTests(unittest.TestCase):
                           headers={'Content-Type': 'application/json'}, method='POST')
         with urlopen(request, timeout=2) as response:
             self.assertEqual(json.load(response)['status'], 'executed')
+            self.assertEqual(response.headers['Referrer-Policy'], 'no-referrer')
         self.mobile.perform.assert_called_once_with(action='back')
         self.sample()
         self.recorder.finish()
         with urlopen(base + '/api/preview?token=' + token, timeout=2) as response:
             self.assertEqual(response.read(), self.mobile._screen.return_value)
+
+    def test_saved_files_endpoint_lists_only_capture_artifacts(self):
+        with patch.object(self.recorder, '_collect'), patch.object(self.recorder, '_refresh'):
+            url = self.recorder.start()
+        base, token = url.split('/?token=')
+        self.sample()
+        with urlopen(base + '/api/files?token=' + token, timeout=2) as response:
+            listing = response.read().decode()
+        for name in ('001.png', '001.xml', 'actions.jsonl', 'exploration.json'):
+            self.assertIn(name, listing)
+        with urlopen(base + '/api/file?token=' + token + '&name=001.png', timeout=2) as response:
+            self.assertEqual(response.read(), self.mobile._screen.return_value)
+            self.assertIn('attachment', response.headers['Content-Disposition'])
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(base + '/api/files', timeout=2)
+        self.assertEqual(denied.exception.code, 403)
+        for name in ('../phase.json', 'phase.json'):
+            with self.assertRaises(HTTPError) as missing:
+                urlopen(base + '/api/file?token=' + token + '&name=' + name, timeout=2)
+            self.assertEqual(missing.exception.code, 404)
+        self.recorder.finish()
+        with urlopen(base + '/api/file?token=' + token + '&name=001.xml', timeout=2) as response:
+            self.assertEqual(response.read(), b'<hierarchy/>')
 
     def test_mcp_stop_then_finish_keeps_pack_and_clears_handle(self):
         import asyncio

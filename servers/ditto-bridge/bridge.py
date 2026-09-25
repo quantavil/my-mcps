@@ -395,7 +395,9 @@ class MobileController:
 
     def _hierarchy(self, timeout=60):
         deadline = time.monotonic() + timeout
-        self._adb('shell', 'uiautomator', 'dump', '/sdcard/ditto-hierarchy.xml', timeout=timeout)
+        dump = self._adb('shell', 'uiautomator', 'dump', '/sdcard/ditto-hierarchy.xml', timeout=timeout)
+        if 'dumped to: /sdcard/ditto-hierarchy.xml' not in dump:
+            raise BridgeError(f'emulator hierarchy dump failed: {dump.strip()[:200]}')
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise BridgeError('UI hierarchy timed out')

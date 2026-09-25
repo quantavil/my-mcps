@@ -30,9 +30,18 @@ class BridgeTests(unittest.TestCase):
         controller = MobileController()
         with patch.object(controller, '_adb') as adb, patch.object(
                 controller, '_bytes', return_value=b'<hierarchy/>') as read:
+            adb.return_value = 'UI hierchary dumped to: /sdcard/ditto-hierarchy.xml'
             controller._hierarchy(timeout=0.02)
         self.assertLessEqual(adb.call_args.kwargs['timeout'], 0.02)
         self.assertLessEqual(read.call_args.kwargs['timeout'], 0.02)
+
+    def test_hierarchy_does_not_read_stale_file_after_failed_dump(self):
+        controller = MobileController()
+        with patch.object(controller, '_adb', return_value='ERROR: could not get idle state'), patch.object(
+                controller, '_bytes') as read:
+            with self.assertRaisesRegex(BridgeError, 'hierarchy dump failed'):
+                controller._hierarchy()
+        read.assert_not_called()
 
     def test_target_tap_waits_for_transition_without_repeating_the_lookup(self):
         controller = MobileController()
