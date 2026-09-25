@@ -1,5 +1,6 @@
 """Free navigation, asynchronous capture, and recoverable exploration evidence."""
 import json
+from hashlib import sha256
 from pathlib import Path
 import shutil
 import subprocess
@@ -33,6 +34,8 @@ class RecorderTests(unittest.TestCase):
         self.mobile._hierarchy.return_value = b'<hierarchy/>'
         self.mobile.target = {'id': 'device'}
         self.mobile.environment = {'density': 280}
+        self.mobile._environment.return_value = {'density': 280}
+        self.mobile.serial = 'emulator-5554'
         self.mobile.package_name = 'example.original'
         self.mobile.package_sha = 'abc'
         self.mobile.receipt = {'server': 'ditto-mobile-control'}
@@ -149,6 +152,31 @@ class RecorderTests(unittest.TestCase):
             self.recorder.action({'action': 'back'})
         self.assertTrue(self.recorder.finish()['finished'])
 
+    def test_batch_selection_preserves_source_and_rejects_tampering(self):
+        self.recorder.action({'action': 'back'})
+        self.sample()
+        self.sample(b'next settled screen')
+        exported = Path(self.recorder.finish()['export_dir'])
+        result = Recorder.select_candidates(exported, [
+            {'checkpoint_id': 'role', 'candidate_number': 1,
+             'observed_state': 'Self selected'},
+            {'checkpoint_id': 'goal', 'candidate_number': 2,
+             'observed_state': 'Conceive selected'}])
+        selected = json.loads(Path(result['selection_path']).read_text())
+        self.assertEqual([entry['checkpoint_id'] for entry in selected['selections']], ['role', 'goal'])
+        self.assertEqual(selected['installed_package_sha256'], 'abc')
+        self.assertEqual(selected['selections'][0]['observed_actions'][0]['input'], {'action': 'back'})
+        self.assertEqual(selected['selections'][0]['png_sha256'],
+                         __import__('hashlib').sha256((exported / '001.png').read_bytes()).hexdigest())
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            Recorder.select_candidates(exported, [
+                {'checkpoint_id': 'role', 'candidate_number': 1, 'observed_state': 'A'},
+                {'checkpoint_id': 'role', 'candidate_number': 2, 'observed_state': 'B'}])
+        (exported / '001.png').write_bytes(b'tampered')
+        with self.assertRaisesRegex(ValueError, 'hash'):
+            Recorder.select_candidates(exported, [
+                {'checkpoint_id': 'role', 'candidate_number': 1, 'observed_state': 'A'}])
+
     def test_finish_rejects_unsaved_bookmark_and_empty_pack(self):
         with self.assertRaisesRegex(ValueError, 'wait for a screen'):
             self.recorder.finish()
@@ -247,6 +275,78 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual([c['id'] for c in selected.status()['checkpoints']], ['goal'])
         with self.assertRaisesRegex(ValueError, 'unknown'):
             Recorder(self.mobile, self.path, checkpoint_ids=['missing'])
+
+    def test_finish_replaces_completed_walkthrough_and_capture_blocks_input(self):
+        self.sample()
+        self.mobile.output.mkdir()
+        (self.mobile.output / 'old.txt').write_text('old')
+        self.mobile.replace_output = True
+        self.recorder.capture_in_progress = True
+        with self.assertRaisesRegex(ValueError, 'still running'):
+            self.recorder.action({'action': 'back'})
+        self.recorder.capture_in_progress = False
+        output = Path(self.recorder.finish()['export_dir'])
+        self.assertTrue((output / 'exploration.json').is_file())
+        self.assertFalse((output / 'old.txt').exists())
+
+    def test_clone_compare_uses_frozen_reference_and_shared_cli(self):
+        project = Path(self.temp.name) / 'project'
+        phase = project / 'phases' / 'setup'
+        original = phase / 'original'
+        original.mkdir(parents=True)
+        (original / '001_role.png').write_bytes(b'original-one')
+        (original / '002_goal.png').write_bytes(b'original-two')
+        manifest = {'artifacts': [
+            {'checkpoint_id': 'role', 'kind': 'png', 'path': '001_role.png',
+             'sha256': sha256(b'original-one').hexdigest()},
+            {'checkpoint_id': 'goal', 'kind': 'png', 'path': '002_goal.png',
+             'sha256': sha256(b'original-two').hexdigest()}]}
+        raw = (json.dumps(manifest) + '\n').encode()
+        (original / 'manifest.json').write_bytes(raw)
+        (phase / 'status.json').write_text(json.dumps({
+            'state': 'correcting', 'original_manifest_sha256': sha256(raw).hexdigest()}))
+        cli = Path(self.temp.name) / 'ditto.py'
+        cli.write_text('')
+        self.mobile.apk_path = Path(self.temp.name) / 'clone.apk'
+        self.mobile.apk_path.write_bytes(b'apk')
+        recorder = Recorder(self.mobile, self.path, role='clone', project_path=project,
+                            phase_cli_path=cli)
+        self.addCleanup(recorder.stop)
+        with patch.object(recorder, '_collect'), patch.object(recorder, '_refresh'):
+            url = recorder.start()
+        base, token = url.split('/?token=')
+        with urlopen(base + '/api/reference?token=' + token, timeout=2) as response:
+            self.assertEqual(response.read(), b'original-one')
+        with self.assertRaises(HTTPError) as denied:
+            urlopen(base + '/api/reference', timeout=2)
+        self.assertEqual(denied.exception.code, 403)
+        self.assertEqual(recorder.reference_png(), b'original-one')
+        recorder.preview = b'\x89PNG\r\n\x1a\nclone'
+        recorder.preview_revision = 0
+        recorder.preview_at = time.monotonic()
+        recorder.stable_frames = 2
+        recorder.last_input = time.monotonic() - 2
+        triptych = phase / 'diff' / '001_role.triptych.png'
+        triptych.parent.mkdir()
+        triptych.write_bytes(b'triptych')
+        response = MagicMock(returncode=0, stdout=json.dumps({
+            'ok': True, 'checkpoint_id': 'role', 'status': 'comparing',
+            'result': str(phase / 'diff' / '001_role.result.json'),
+            'triptych': str(triptych), 'report': str(phase / 'diff' / 'report.json')}))
+        with patch('recorder.subprocess.run', return_value=response) as call:
+            result = recorder.capture_and_compare('review note')
+        self.assertEqual(result['checkpoint_id'], 'role')
+        self.assertEqual(recorder.triptych_png(), b'triptych')
+        with urlopen(base + '/api/triptych?token=' + token, timeout=2) as response:
+            self.assertEqual(response.read(), b'triptych')
+        request = json.loads((self.mobile.stage / 'comparison-request.json').read_text())
+        self.assertEqual(request['selections'][0]['original_png_sha256'],
+                         sha256(b'original-one').hexdigest())
+        self.assertEqual(request['selections'][0]['notes'], 'review note')
+        self.assertEqual(call.call_args.args[0][7:10], ['phase', 'capture-clone', 'setup'])
+        self.assertEqual(recorder.move_checkpoint(1)['checkpoint_id'], 'goal')
+        self.assertEqual(recorder.reference_png(), b'original-two')
+        self.assertEqual(recorder.move_checkpoint(-1)['checkpoint_id'], 'role')
 
 
 if __name__ == '__main__':

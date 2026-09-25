@@ -34,15 +34,27 @@ guides them without enforcing action order. Separate workers refresh stills and
 save candidate PNG/XML during pauses; optional Save screen bookmarks are available.
 Input never waits for hierarchy capture. `actions.jsonl` preserves attempts,
 results and detours; `exploration.json` links candidates to input positions.
-Candidates are not phase evidence and their replay is unverified. AI selects
-useful states, builds/tests guarded routes, and captures verified checkpoints.
-Done/finish exports the pack and releases the device; stop closes the panel.
-After stop, finish preserves candidates or mobile abort discards them. After
-finish, stop clears the recorder. Direct emulator clicks are not recorded.
-`capture.json` embeds candidate replay steps and session/ADB timings.
-`run_checkpoints(plan_path=...)` loads that export or a reviewed `{ "plan": [...] }`
-file; every loaded checkpoint needs an expected-screen marker. Review fixtures and
-selectors before reuse, and verify clone behavior after execution.
+AI reviews candidate images and promotes selected checkpoints in one batch, preserving
+package/device identity, capture times, and the actual action log. Original capture
+does not require a second walkthrough or replay. Human navigation need not match
+an AI-written action protocol. Selection establishes the reference state, not proof
+of persistence, network behavior, or an unobserved interaction.
+
+For clone capture the same panel shows the frozen original beside the live Android
+screen. The human navigates and selects **Capture & compare**, then **Next** and
+**Done**. Capture & compare saves settled evidence and invokes the skill's shared
+import/comparison operation; it displays the resulting original/clone/diff image.
+The skill checkout is supplied explicitly, so the MCP does not duplicate its diff
+engine. Optional notes help AI review the batch. AI implements corrections; the
+human revisits affected checkpoints. There is no automatic navigation-owner handoff.
+
+Selected phase files have stable names. Successful replacement updates current
+metadata and clears obsolete verdicts; failed capture must not publish a new pass.
+The original stays frozen unless replacement is explicitly requested. One current
+report links the evidence and records the APK identities actually tested.
+Done exports the walkthrough and releases the device; stop closes the panel.
+Direct emulator clicks are not recorded. Low-level replay tools remain available
+for explicit automation and diagnostics; they are not required by this human workflow.
 For hot-reload development, start the clone with `flutter run`, then call
 `preview_begin(serial, target_id, package_name)` on the already-running app.
 `perform`, `replay`, `observe_screen`, and `inspect_ui` work in preview; `abort`
@@ -53,58 +65,19 @@ Network and Flutter semantics capture are unavailable and fail explicitly if
 requested. Use only a declared fixture and checkpoint protocol; the controller
 cannot determine whether a tap reached the intended app state by itself.
 
-## Verification
+## Validation
 
-The September 25 free-navigation recorder check used the original
-`my_period_calendar_v13.2.0.apk` on `floww_light` (Android 14, 720×1600/280 dpi,
-software graphics), through a fresh FastMCP client. The input endpoint logged
-an executed tap; automatic capture retained three candidate images, marking
-transitional XML gaps explicitly. Visual inspection of the PNG/XML pair showed
-an Android System UI ANR, not a usable app checkpoint. Finish exported the pack
-and released the device. This checks transport/capture lifecycle only; a usable
-human walkthrough and full app replay remain unverified on this emulator.
-The recorder now flags ANR titles in captured XML. Native Windows remains untested.
+Run the bridge tests after controller changes:
 
-The September 25, 2026 trial installed uiautomator2 3.7.0 in an isolated uv
-environment, but the Floww debug-APK probe stopped at a System UI ANR before
-hierarchy timings could be compared. It is not a production dependency, and no
-speedup has been established. Reevaluate on a stable device before replacing the
-working hierarchy backend.
+```text
+uv run --project servers/ditto-bridge --locked python -m unittest discover -s servers/ditto-bridge/tests -p 'test_*.py'
+```
 
-Run `uv run --project servers/ditto-bridge --locked python -m unittest discover -s servers/ditto-bridge/tests -p 'test_*.py'`,
-`bun test`, `bunx tsc --noEmit`, and `bun run check` from this repository.
-Then connect to each configured MCP over stdio and call its actual tool on an
-APK or emulator. A listed tool, installed CLI, or valid configuration is not a
-successful capability probe. The required Ditto preflight passes only when all
-four required verified receipts match the original APK and emulator. Dart MCP has its
-own protocol and tool-list check and does not replace any Ditto capability.
-
-## Local capability audit (2026-09-23)
-
-The same locally built Flutter release APK (SHA-256
-`84b21261b9a0544880a6e9099b9b59f0d252cf3be7fafa21824c34cf3e411ab4`)
-was submitted through each analyzer MCP over stdio. JADX, Apktool, and
-r2Flutter returned package-bound exports. JADX reported eight classes that it
-could not decompile; its receipt records that limitation. FlutterDec's real
-call failed on that APK with `missing symbol _kDartVmSnapshotData`, so it has
-no healthy receipt. The tested APK uses Dart 3.13's combined `_kDartSnapshotData`
-and `_kDartSnapshotText` symbols, which this FlutterDec loader does not support.
-A separate public Flutter APK had a recognized snapshot
-hash but no exact adapter registry record for its feature set. These outcomes
-do not supply an optional FlutterDec export. They do not establish the revised
-four-capability preflight either, because the mobile probe below used another APK.
-
-The official Dart MCP completed a stdio tool call (`pub_dev_search`). The
-mobile-control MCP completed a probe and PNG/XML/trace/state capture on the
-local `floww_parity` AVD using a separate locally built debug APK (SHA-256
-`c2aeccdecfa7be2ee875a037ad227fe53e549a8b8cddb46bd2b4710d041b99a2`).
-Both the final probe screenshot and checkpoint screenshot visibly show the
-clone screen. Earlier cold-boot attempts showed a System UI ANR dialog, which
-the stricter controller rejected. The successful run used a 720x1280 local
-emulator after its UI settled. The probe and capture exports are in
-`/tmp/ditto-probe-mobile-verified-20260923` and
-`/tmp/ditto-capture-mobile-verified-20260923`. The final receipt records the
-emulator's `en-US` locale.
+Run the manager's `bun test`, `bunx tsc --noEmit`, and `bun run check` when changing
+its configuration/deployment code. A listed tool or valid configuration does not
+prove runtime capability. Keep real APK/emulator receipts with the project that
+was tested. Reuse valid analyzer receipts; check the live capture environment.
+Native Windows runtime validation remains pending. No local release builds.
 
 ## Reuse and capture behavior
 
@@ -115,9 +88,10 @@ excerpts without rerunning analysis. Search continuation uses both `next_offset`
 and retained captures do not expire merely because time passed or a server restarted.
 
 Mobile `perform` records arguments and a named protocol `step`; `replay` runs a
-bounded list of those actions. `observe_screen` returns the current image. Capture
-requires `observed_state` and declared steps matching the executed record, and
-rejects environment drift. The agent must verify the visible result: successful
+bounded list of those actions. `observe_screen` returns the current image. The low-level automated `capture`
+operation requires `observed_state` and declared steps matching the executed record.
+Human recorder capture preserves actual inputs instead of enforcing that protocol.
+Both paths must reject environment drift. The agent must verify the visible result: successful
 ADB input only proves command execution. `reset`, `stop`, and `restart` support
 explicit lifecycle checks. A foreground state dump alone does not prove persistence.
 Typing currently supports simple ASCII text; Unicode input, network capture, and
@@ -155,15 +129,6 @@ the skill no longer ships a launcher or shell wrapper. The CLI equivalent is
 with `DITTO_AVD` set. `DITTO_GPU` and `DITTO_ACCEL` control the CLI defaults. CPU virtualization and GPU rendering are separate;
 software rendering does not make ARM-only APKs run on every x86 AVD. Choose a
 compatible APK/AVD/host combination. Native Windows testing remains pending.
-
-## Latest focused audit
-
-After the reuse changes, real stdio calls to JADX, Apktool, and r2Flutter succeeded
-on the release APK above, including cache reuse and bounded queries. The same APK
-failed the mobile probe: its ARM64 Flutter library could not load on the local
-x86_64 AVD (`EM_AARCH64` versus `EM_X86_64`). Thus the updated four-capability
-pipeline has no complete same-APK runtime pass. The earlier debug-APK capture
-reported above predates these controller changes and is not proof of the new flow.
 
 ## Dependency and controller decisions
 

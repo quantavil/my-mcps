@@ -329,6 +329,7 @@ class MobileController:
         self.stage = None
         self.preview_mode = False
         self.output = None
+        self.replace_output = False
         self.package_sha = None
         self.package_name = None
         self.apk_path = None
@@ -506,13 +507,20 @@ class MobileController:
         if package_name not in focus:
             raise BridgeError(f'expected {package_name} in focused window; got {focus[:200]}')
 
-    def _wait_for_app_focus(self, package_name, seconds=20):
+    def _wait_for_app_focus(self, package_name, seconds=30):
         deadline = time.monotonic() + seconds
+        last_error = None
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise BridgeError(f'expected {package_name} to have focus within {seconds} seconds')
             try:
-                self._assert_app_focus(package_name, timeout=max(0.001, min(30, deadline - time.monotonic())))
+                self._assert_app_focus(package_name, timeout=min(30, remaining))
                 return
             except BridgeError as error:
+                last_error = error
                 remaining = deadline - time.monotonic()
                 if 'ANR dialog' in str(error) or remaining <= 0:
                     raise
@@ -580,19 +588,49 @@ class MobileController:
         self.receipt = receipt
         return {'receipt': receipt, 'export_dir': str(output)}
 
-    def begin(self, serial, apk_path, package_name, output_dir):
+    def _validate_replaceable_exploration(self, output, package_name, target):
+        output = Path(output)
+        if not output.is_dir() or output.is_symlink():
+            raise BridgeError('replace_output needs a completed Ditto exploration directory')
+        try:
+            pack = json.loads((output / 'exploration.json').read_text(encoding='utf-8'))
+            if pack.get('kind') != 'ditto_exploration' or pack.get('package_name') != package_name:
+                raise BridgeError('existing exploration package does not match')
+            if pack.get('target') != target:
+                raise BridgeError('existing exploration target does not match')
+            if not pack.get('installed_package_sha256') or not isinstance(pack.get('shots'), list) or not pack['shots']:
+                raise BridgeError('existing exploration metadata is incomplete')
+            names = [pack.get('action_log')]
+            for shot in pack['shots']:
+                for kind in ('png', 'xml'):
+                    name = shot.get(kind)
+                    if name is not None:
+                        names.append(name)
+                        path = (output / name).resolve()
+                        if (path.parent != output.resolve() or not path.is_file()
+                                or digest(path) != shot.get(kind + '_sha256')):
+                            raise BridgeError(f'existing exploration {kind} hash or path is invalid')
+            if any(not isinstance(name, str) or (output / name).resolve().parent != output.resolve()
+                   or not (output / name).is_file() for name in names):
+                raise BridgeError('existing exploration journal or artifact is missing')
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            raise BridgeError(f'existing exploration is invalid: {error}') from error
+
+    def begin(self, serial, apk_path, package_name, output_dir, replace_output=False):
         if not self.receipt or serial != self.serial:
             raise BridgeError('active mobile-control probe does not match this emulator')
         apk = Path(apk_path).expanduser().resolve(strict=True)
         if apk_package_name(apk) != package_name:
             raise BridgeError('requested package name differs from supplied APK')
         output = Path(output_dir).expanduser().absolute()
-        if output.exists() or self.stage is not None or self.preview_mode:
+        if (output.exists() and not replace_output) or self.stage is not None or self.preview_mode:
             raise BridgeError('capture output exists or another capture is active')
         self._reset_timings()
         self._identity(serial, self.target['id'])
         self.environment = self._environment()
         package_sha = digest(apk)
+        if output.exists():
+            self._validate_replaceable_exploration(output, package_name, self.target)
         installed = self._ensure_installed(apk, package_name, package_sha)
         self._adb('shell', 'am', 'force-stop', package_name)
         launched = self._adb('shell', 'monkey', '-p', package_name, '1')
@@ -602,6 +640,7 @@ class MobileController:
         output.parent.mkdir(parents=True, exist_ok=True)
         self.stage = Path(tempfile.mkdtemp(prefix='.ditto-capture-', dir=output.parent))
         self.output = output
+        self.replace_output = replace_output
         self.package_sha = package_sha
         self.package_name = package_name
         self.apk_path = apk
@@ -868,6 +907,7 @@ class MobileController:
             shutil.rmtree(self.stage, ignore_errors=True)
         self.stage = self.output = None
         self.preview_mode = False
+        self.replace_output = False
         self.records, self.actions = [], []
         self.replay_plan = []
         self.release_device()
@@ -876,6 +916,8 @@ class MobileController:
     def finalize(self):
         if self.stage is None or not self.records:
             raise BridgeError('no active captured checkpoints to finalize')
+        if getattr(self, 'replace_output', False):
+            raise BridgeError('replace_output is only for human recorder exploration')
         wall_ms = (time.monotonic() - self.started_clock) * 1000
         adb_ms = sum(item['duration_ms'] for item in self.command_timings.values())
         capture = {

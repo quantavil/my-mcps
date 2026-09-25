@@ -59,20 +59,34 @@ if ROLE == 'mobile-control':
             return MOBILE.inspect_ui(query, limit)
 
     @mcp.tool()
-    def recorder_control(operation: Literal['start', 'status', 'finish', 'stop'],
+    def recorder_control(operation: Literal['start', 'status', 'finish', 'stop', 'select'],
                          contract_path: str | None = None,
-                         checkpoint_ids: list[str] | None = None) -> dict:
+                         checkpoint_ids: list[str] | None = None,
+                         role: Literal['original', 'clone'] = 'original',
+                         project_path: str | None = None,
+                         phase_cli_path: str | None = None,
+                         exploration_dir: str | None = None,
+                         selections: list[dict] | None = None) -> dict:
         """Open a localhost walkthrough: free taps/swipes/back/type, automatic stills.
 
         Begin package-bound capture first. The checklist guides, never gates input.
-        Save screen bookmarks a candidate; pauses auto-save distinct screens and
-        available XML. Input logs preserve detours/failures. AI reviews candidates
-        and validates replay while collecting declared phase checkpoints.
+        Original: Save screen bookmarks a candidate; pauses auto-save distinct
+        screens and available XML. AI batch-selects reviewed candidates with
+        select(exploration_dir, selections=[{checkpoint_id,candidate_number,
+        observed_state}]) after finish. Replay is optional.
+        Clone: start with role=clone, project_path, phase_cli_path. Browser shows
+        each frozen original beside the live clone; Capture & compare calls the
+        shared Ditto phase script and displays its triptych. Input logs preserve
+        detours/failures. The checklist permits backtracking and retakes.
         Finish exports exploration.json/actions.jsonl/PNGs/XML and releases the device.
         Stop closes the panel; then finish to keep candidates or mobile abort to discard.
         No video, cloud service, or direct-emulator click recording.
         """
         global RECORDER
+        if operation == 'select':
+            if not exploration_dir:
+                raise ValueError('exploration_dir is required for selection')
+            return Recorder.select_candidates(exploration_dir, selections)
         if operation == 'stop':
             with controller_lock:
                 recorder = RECORDER
@@ -97,7 +111,9 @@ if ROLE == 'mobile-control':
                     raise ValueError('stop the existing recorder before starting another')
                 if not contract_path:
                     raise ValueError('contract_path is required')
-                RECORDER = Recorder(MOBILE, contract_path, controller_lock, checkpoint_ids)
+                RECORDER = Recorder(MOBILE, contract_path, controller_lock, checkpoint_ids,
+                                    role=role, project_path=project_path,
+                                    phase_cli_path=phase_cli_path)
                 try:
                     return {'url': RECORDER.start(), 'phase_id': RECORDER.contract['phase_id']}
                 except Exception:
@@ -113,7 +129,8 @@ if ROLE == 'mobile-control':
     def mobile_control(operation: Literal['probe', 'begin', 'preview_begin', 'perform', 'replay', 'run_checkpoints', 'capture', 'recover', 'finalize', 'abort'], serial: str | None = None,
                        target_id: str | None = None, apk_path: str | None = None,
                        package_name: str | None = None,
-                       output_dir: str | None = None, action: Literal['tap', 'tap_target', 'wait_target', 'type', 'swipe', 'back', 'launch', 'stop', 'restart', 'reset', 'wait'] | None = None,
+                       output_dir: str | None = None, replace_output: bool = False,
+                       action: Literal['tap', 'tap_target', 'wait_target', 'type', 'swipe', 'back', 'launch', 'stop', 'restart', 'reset', 'wait'] | None = None,
                        x: int | None = None, y: int | None = None,
                        end_x: int | None = None, end_y: int | None = None,
                        text: str | None = None, duration_ms: int = 300,
@@ -131,6 +148,8 @@ if ROLE == 'mobile-control':
 
         Probe: serial, target_id (AVD name), apk_path, package_name, output_dir.
         Begin: serial, apk_path, package_name, output_dir; acquires exclusive device ownership.
+        replace_output permits a completed same-package, same-target human
+        exploration export to be replaced after the new walkthrough succeeds.
         Preview_begin: serial, target_id, package_name; controls an already running
         debug app without installation, receipts, or eligible phase evidence.
         Perform: action tap/tap_target/wait_target/type/swipe/back/launch/stop/restart/reset/wait.
@@ -170,7 +189,7 @@ if ROLE == 'mobile-control':
                         if not target_id:
                             raise ValueError('target_id is required for preview')
                         return MOBILE.preview_begin(serial, target_id, package_name)
-                    return MOBILE.begin(serial, apk_path, package_name, output_dir)
+                    return MOBILE.begin(serial, apk_path, package_name, output_dir, replace_output)
                 except Exception:
                     MOBILE.abort()
                     raise

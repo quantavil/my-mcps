@@ -12,6 +12,27 @@ from bridge import BridgeError, MobileController, analyze_package, digest, query
 
 
 class BridgeTests(unittest.TestCase):
+    def test_replaceable_exploration_checks_identity_and_artifact_hash(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / 'capture'
+            folder.mkdir()
+            (folder / '001.png').write_bytes(b'old screenshot')
+            (folder / 'actions.jsonl').write_text('')
+            (folder / 'exploration.json').write_text(json.dumps({
+                'kind': 'ditto_exploration', 'package_name': 'example.app',
+                'installed_package_sha256': 'old-build',
+                'target': {'id': 'avd'}, 'action_log': 'actions.jsonl',
+                'shots': [{'png': '001.png', 'png_sha256': digest(folder / '001.png'),
+                           'xml': None}]}))
+            controller = MobileController()
+            controller._validate_replaceable_exploration(folder, 'example.app', {'id': 'avd'})
+            (folder / '001.png').write_bytes(b'changed')
+            with self.assertRaisesRegex(BridgeError, 'hash'):
+                controller._validate_replaceable_exploration(folder, 'example.app', {'id': 'avd'})
+            (folder / '001.png').write_bytes(b'old screenshot')
+            with self.assertRaisesRegex(BridgeError, 'package'):
+                controller._validate_replaceable_exploration(folder, 'other.app', {'id': 'avd'})
+
     def test_matching_installed_apk_is_not_reinstalled(self):
         controller = MobileController()
         with patch.object(controller, '_assert_installed_apk'), patch.object(controller, '_adb') as adb:
