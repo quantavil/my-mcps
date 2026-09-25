@@ -1,94 +1,67 @@
-"""Local still-image control panel for human-driven Ditto captures."""
+"""Free human exploration through the MCP controller; candidates need AI review."""
+from datetime import datetime, timezone
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import secrets
 import threading
+import time
+import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlparse
-
-from bridge import BridgeError
 
 
 PANEL = r'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ditto recorder</title>
-<style>body{font:16px system-ui;max-width:900px;margin:20px auto;padding:0 16px;color:#191919}
-main{display:flex;gap:24px;flex-wrap:wrap}section{min-width:290px;flex:1}
-img{width:100%;max-width:400px;border:1px solid #bbb;touch-action:none}
-button,select,input{font:inherit;margin:5px 4px 5px 0;padding:8px}
-#message{white-space:pre-wrap;color:#942a42}small{display:block;color:#555}</style>
-<h1>Ditto recorder</h1><p>Click or swipe the still image to control the emulator.
-Each action is logged by the local MCP. Capture after the screen settles.</p>
-<main><section><img id="screen" alt="Current emulator screen"><br><button id="refresh">Refresh still</button>
-</section><section><label>Checkpoint <select id="checkpoint"></select></label>
-<p><strong>Start here:</strong> <span id="setup"></span></p>
-<p><strong>Capture when:</strong> <span id="capture-when"></span></p>
-<details><summary>Inputs for this run</summary><dl id="fixture"></dl></details>
-<p id="step"></p><label><input type="checkbox" id="incidental">Preparation / popup action</label>
-<small>Use for focusing a field, scrolling to a control, or dismissing a popup without completing the named step.</small>
-<p><input id="input" placeholder="Text to type"><button id="type">Type</button>
-<button id="back">Back</button></p>
-<details><summary>Screen marker for replay</summary><input id="expect" placeholder="Unique screen text (optional)">
-<small>The AI can supply this in advance. Use a screen heading, not a shared label such as Next.</small></details>
-<button id="capture">Capture checkpoint</button><button id="finish">Finish capture</button>
-<button id="handoff">Return control to AI</button>
-<p id="message"></p></section></main>
-<script>
-const token=__TOKEN__, q='?token='+encodeURIComponent(token);
-const screen=document.getElementById('screen'), select=document.getElementById('checkpoint');
-const message=document.getElementById('message'), incidental=document.getElementById('incidental');
-let status={},busy=false,ended=false,activeCheckpoint=null;
-function controls(disabled){document.querySelectorAll('button,input,select').forEach(e=>e.disabled=disabled);
-screen.style.pointerEvents=disabled?'none':'auto'}
-async function operation(work){if(busy||ended)return;busy=true;controls(true);
-try{await work()}catch(e){message.textContent=e.message}finally{busy=false;controls(ended)}}
-async function call(path,data){const r=await fetch('/api/'+path+q,{method:'POST',
-headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-const value=await r.json();if(!r.ok)throw Error(value.error||r.statusText);return value}
-async function refresh(){const r=await fetch('/api/status'+q);status=await r.json();
-if(!r.ok)throw Error(status.error||r.statusText);
-if(!select.options.length){for(const c of status.checkpoints){const o=document.createElement('option');
-o.value=c.id;o.textContent=c.number+' '+c.id;select.append(o)}}
-if(status.completed.includes(select.value)){
-const next=status.checkpoints.find(c=>!status.completed.includes(c.id));
-if(next)select.value=next.id}
-const c=status.checkpoints.find(c=>c.id===select.value)||status.checkpoints[0];
-document.getElementById('setup').textContent=c.setup;
-document.getElementById('capture-when').textContent=c.capture_when||'Complete the listed actions, then wait for the screen to settle.';
-const fixture=document.getElementById('fixture');fixture.replaceChildren();
-for(const [key,value] of Object.entries(c.fixture_values)){
-const label=document.createElement('dt'),detail=document.createElement('dd');
-label.textContent=key.replaceAll('_',' ');detail.textContent=typeof value==='string'?value:JSON.stringify(value);
-fixture.append(label,detail)}
-if(activeCheckpoint!==c.id){document.getElementById('expect').value=c.expect||'';activeCheckpoint=c.id}
-document.getElementById('step').textContent='Next declared action: '+(c?.actions[status.pending.length]||'none')+
-'\nCompleted: '+status.completed.join(', ');
-await new Promise((resolve,reject)=>{screen.onload=resolve;screen.onerror=()=>reject(Error('Could not refresh screen'));
-screen.src='/api/screen'+q+'&v='+Date.now()})}
-async function act(data){await operation(async()=>{await call('action',{
-checkpoint_id:select.value,incidental:incidental.checked,...data});
-incidental.checked=false;message.textContent='Action recorded';await refresh()})}
-screen.addEventListener('pointerdown',e=>{if(busy||ended)return;
-screen.setPointerCapture(e.pointerId);screen.dataset.x=e.offsetX;screen.dataset.y=e.offsetY;screen.dataset.time=Date.now()});
-screen.addEventListener('pointerup',e=>{if(busy||ended||!screen.dataset.time)return;
-const x=+screen.dataset.x,y=+screen.dataset.y,started=+screen.dataset.time;delete screen.dataset.time;
-const scaleX=screen.naturalWidth/screen.clientWidth,scaleY=screen.naturalHeight/screen.clientHeight;
-const endX=Math.round(e.offsetX*scaleX),endY=Math.round(e.offsetY*scaleY);
-const startX=Math.round(x*scaleX),startY=Math.round(y*scaleY);
-if(Math.hypot(endX-startX,endY-startY)>25)act({action:'swipe',x:startX,y:startY,end_x:endX,end_y:endY,
-duration_ms:Math.max(100,Math.min(1000,Date.now()-started))});
-else act({action:'tap',x:endX,y:endY})});
-document.getElementById('type').onclick=()=>act({action:'type',text:document.getElementById('input').value});
-document.getElementById('back').onclick=()=>act({action:'back'});
-document.getElementById('refresh').onclick=()=>operation(refresh);select.onchange=()=>operation(refresh);
-document.getElementById('capture').onclick=()=>operation(async()=>{await call('capture',{
-checkpoint_id:select.value,expect:document.getElementById('expect').value.trim()});
-document.getElementById('expect').value='';message.textContent='Checkpoint saved';await refresh()});
-document.getElementById('finish').onclick=()=>operation(async()=>{const v=await call('finalize',{});
-ended=true;message.textContent='Saved to '+v.export_dir});
-document.getElementById('handoff').onclick=()=>operation(async()=>{await call('handoff',{});
-ended=true;message.textContent='Session preserved. Tell the AI to resume.'});
-operation(refresh);</script></html>'''
+<title>Ditto walkthrough</title>
+<style>body{font:16px system-ui;margin:20px;color:#191919}main{display:flex;gap:24px;flex-wrap:wrap}
+section{max-width:460px}button,input{font:inherit;padding:10px;margin:4px}li{margin:10px 0}
+#screen{max-width:100%;max-height:75vh;width:auto;height:auto;touch-action:none;user-select:none;background:#eee}
+#message{white-space:pre-wrap}#screen.busy{opacity:.7}</style>
+<h1>Explore this phase</h1><main><section>
+<p>Click or drag on the phone below. Backtracking and extra screens are fine.</p>
+<img id="screen" alt="Waiting for emulator screen" draggable="false">
+</section><section><h2>Look for these states</h2><ol id="guide"></ol>
+<p>Actions are recorded automatically. Pauses save candidate screens and available XML.
+Use <strong>Save screen</strong> to bookmark anything important. The AI will choose what to keep.</p>
+<button id="back">Back</button><button id="save">Save screen</button><button id="done">Done</button>
+<form id="typing"><input id="text" aria-label="Text to enter" placeholder="Text to enter" maxlength="500">
+<button>Type</button></form><p id="message" role="status"></p><p id="counts"></p>
+</section></main><script>
+const q='?token='+encodeURIComponent(__TOKEN__),$=id=>document.getElementById(id);
+let busy=false,finished=false,down=null,blobUrl=null;
+async function api(path,data){const r=await fetch('/api/'+path+q,data===undefined?{}:
+{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+const v=await r.json();if(!r.ok)throw Error(v.error||r.statusText);return v}
+async function run(path,data){if(busy||finished)return;busy=true;$('screen').classList.add('busy');
+$('message').textContent='Sending…';
+try{const v=await api(path,data);finished=!!v.finished;
+$('message').textContent=finished?'Saved. Tell the AI you are done.':path==='save'?
+'Bookmark requested. Pause briefly on this screen.':'Input sent. Wait for the screen to respond.'}
+catch(e){$('message').textContent=e.message}
+finally{busy=false;$('screen').classList.remove('busy')}}
+function point(e){const r=$('screen').getBoundingClientRect();return {
+x:Math.min($('screen').naturalWidth-1,Math.max(0,Math.round((e.clientX-r.left)*$('screen').naturalWidth/r.width))),
+y:Math.min($('screen').naturalHeight-1,Math.max(0,Math.round((e.clientY-r.top)*$('screen').naturalHeight/r.height)))}}
+$('screen').onpointerdown=e=>{if(busy||finished||!$('screen').naturalWidth)return;
+down={...point(e),at:performance.now()};$('screen').setPointerCapture(e.pointerId)};
+$('screen').onpointerup=e=>{if(!down)return;const a=down,b=point(e);down=null;
+const ms=Math.min(3000,Math.max(100,Math.round(performance.now()-a.at)));
+run('action',Math.hypot(b.x-a.x,b.y-a.y)>12||ms>500?
+{action:'swipe',x:a.x,y:a.y,end_x:b.x,end_y:b.y,duration_ms:ms}:{action:'tap',x:a.x,y:a.y})};
+$('screen').onpointercancel=()=>down=null;
+$('back').onclick=()=>run('action',{action:'back'});$('save').onclick=()=>run('save',{});
+$('done').onclick=()=>run('finish',{});
+$('typing').onsubmit=e=>{e.preventDefault();run('action',{action:'type',text:$('text').value})};
+async function refresh(){try{const v=await api('status');finished=v.finished;
+if(!$('guide').children.length)for(const c of v.checkpoints){const li=document.createElement('li');
+li.textContent=c.capture_when||c.setup||c.id;$('guide').append(li)}
+$('counts').textContent=v.saved+' screens · '+v.actions+' inputs'+(v.warning?' · '+v.warning:'');
+if(!down){const r=await fetch('/api/preview'+q);if(r.ok){const next=URL.createObjectURL(await r.blob());
+$('screen').src=next;if(blobUrl)URL.revokeObjectURL(blobUrl);blobUrl=next}}
+}catch(e){$('counts').textContent=e.message}if(!finished)setTimeout(refresh,700)}refresh();
+</script></html>'''
 
 
 class Recorder:
@@ -99,130 +72,219 @@ class Recorder:
         checkpoints = self.contract.get('checkpoints')
         if not isinstance(checkpoints, list) or not checkpoints:
             raise ValueError('phase contract has no checkpoints')
-        self.checkpoints = {item['id']: item for item in checkpoints}
-        if len(self.checkpoints) != len(checkpoints):
+        ids = [item['id'] for item in checkpoints]
+        if len(set(ids)) != len(ids):
             raise ValueError('phase contract has duplicate checkpoint IDs')
         if checkpoint_ids is not None:
             if (not isinstance(checkpoint_ids, list) or not checkpoint_ids
-                    or any(not isinstance(key, str) or key not in self.checkpoints for key in checkpoint_ids)
-                    or len(set(checkpoint_ids)) != len(checkpoint_ids)):
+                    or len(set(checkpoint_ids)) != len(checkpoint_ids)
+                    or any(key not in ids for key in checkpoint_ids)):
                 raise ValueError('checkpoint_ids contains unknown, duplicate, or no checkpoints')
-            self.checkpoints = {key: item for key, item in self.checkpoints.items() if key in checkpoint_ids}
-        self.handoff_requested = False
+            checkpoints = [item for item in checkpoints if item['id'] in checkpoint_ids]
+        self.checkpoints = checkpoints
+        self.shots = []
+        self.events = []
+        self.finished = False
+        self.closed = False
+        self.stopped = False
         self.token = secrets.token_urlsafe(24)
-        self.server = None
-        self.thread = None
-
-    def _checkpoint(self, identifier):
-        if self.handoff_requested:
-            raise ValueError('recorder handed back; ask the AI to resume')
-        if identifier not in self.checkpoints:
-            raise ValueError(f'unknown checkpoint: {identifier}')
-        if self.mobile.stage is None:
-            raise ValueError('begin mobile capture before opening the recorder')
-        completed = {record['checkpoint_id'] for record in self.mobile.records}
-        if identifier in completed:
-            raise ValueError(f'checkpoint already complete: {identifier}')
-        next_checkpoint = next((key for key in self.checkpoints if key not in completed), None)
-        if identifier != next_checkpoint:
-            raise ValueError(f'next checkpoint is {next_checkpoint}')
-        return self.checkpoints[identifier]
+        self.server = self.thread = self.worker = self.display = None
+        self.halt = threading.Event()
+        self.preview = None
+        self.preview_revision = -1
+        self.stable_frames = 0
+        self.revision = 0
+        self.last_input = time.monotonic()
+        self.bookmark = False
+        self.warning = ''
+        self.output = mobile.output
 
     def status(self):
-        return {'phase_id': self.contract['phase_id'],
-                'handoff_requested': self.handoff_requested,
-                'capture_active': self.mobile.stage is not None,
-                'checkpoints': [{'number': item['number'], 'id': item['id'],
-                                 'actions': item['actions'], 'setup': item['setup'],
-                                 'capture_when': item.get('capture_when'), 'expect': item.get('expect'),
-                                 'fixture_values': self.contract.get('fixtures', {}).get(item['fixture'], {})}
-                                for item in self.checkpoints.values()],
-                'completed': list(dict.fromkeys(record['checkpoint_id']
-                                                for record in self.mobile.records)),
-                'pending': [event['step'] for event in self.mobile.actions if event.get('step')]}
+        return {'phase_id': self.contract['phase_id'], 'saved': len(self.shots),
+                'actions': len(self.events), 'finished': self.finished,
+                'warning': self.warning, 'capture_active': self.mobile.stage is not None,
+                'staging_dir': str(self.mobile.stage) if self.mobile.stage is not None else None,
+                'export_dir': str(self.output),
+                'checkpoints': [{'id': c['id'], 'setup': c.get('setup'),
+                                 'capture_when': c.get('capture_when')} for c in self.checkpoints]}
 
-    def action(self, identifier, request):
-        checkpoint = self._checkpoint(identifier)
-        action = request.get('action')
-        if action not in ('tap', 'swipe', 'type', 'back'):
-            raise ValueError('recorder supports tap, swipe, type, and back')
-        performed = [event['step'] for event in self.mobile.actions if event.get('step')]
-        expected = checkpoint['actions']
-        if performed != expected[:len(performed)]:
-            raise ValueError('recorded actions differ from selected checkpoint')
-        incidental = request.get('incidental', False)
-        if not isinstance(incidental, bool):
-            raise ValueError('incidental must be boolean')
-        if not incidental and len(performed) >= len(expected):
-            raise ValueError('all declared actions are recorded; select incidental or capture')
-        step = None if incidental else expected[len(performed)]
-        arguments = {key: request[key] for key in ('x', 'y', 'end_x', 'end_y',
-                                                    'text', 'duration_ms') if key in request}
-        selector = None
-        if action == 'tap' and 'x' in arguments and 'y' in arguments:
+    def _active(self):
+        if self.finished or self.closed or self.mobile.stage is None:
+            raise ValueError('no active recorder; start a new walkthrough')
+
+    def _journal(self, value):
+        with (self.mobile.stage / 'actions.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(value) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def action(self, payload):
+        with self.lock:
+            self._active()
+            fields = {'tap': {'x', 'y'}, 'swipe': {'x', 'y', 'end_x', 'end_y', 'duration_ms'},
+                      'type': {'text'}, 'back': set()}
+            kind = payload.get('action')
+            if kind not in fields or set(payload) != fields[kind] | {'action'}:
+                raise ValueError('use tap, swipe, type, or back with their required arguments')
+            if kind == 'type' and (not isinstance(payload['text'], str) or len(payload['text']) > 500):
+                raise ValueError('text must be at most 500 characters')
+            for key in fields[kind] - {'text'}:
+                if type(payload[key]) is not int or not 0 <= payload[key] <= 30000:
+                    raise ValueError('coordinates/duration must be integers in 0..30000')
+            number = len(self.events) + 1
+            event = {'number': number, 'input': payload, 'at': datetime.now(timezone.utc).isoformat()}
+            self._journal({**event, 'status': 'requested'})
+            self.revision += 1  # Even a failed transport may have changed device state.
             try:
-                visible = self.mobile.inspect_ui(limit=100)
-                if not visible['truncated']:
-                    nodes = visible['nodes']
-                    hits = [node for node in nodes if node['bounds'][0] <= arguments['x'] < node['bounds'][2]
-                            and node['bounds'][1] <= arguments['y'] < node['bounds'][3]]
-                    hits.sort(key=lambda node: (node['bounds'][2] - node['bounds'][0]) *
-                              (node['bounds'][3] - node['bounds'][1]))
-                    for node in hits:
-                        for field in ('resource_id', 'description', 'text'):
-                            value = node[field]
-                            if value and sum(any(value.casefold() == item[key].casefold() for key in
-                                    ('resource_id', 'description', 'text')) for item in nodes) == 1:
-                                selector = value
-                                break
-                        if selector:
-                            break
-            except BridgeError:
-                pass  # Coordinate recording remains usable when the app exposes no hierarchy.
-        event = self.mobile.perform(action, step=step, **arguments)
-        if selector:
-            event['replay_selector'] = selector
-        return event
+                event['executed'] = self.mobile.perform(**payload)
+                event['status'] = 'executed'
+            except Exception as error:
+                event.update(status='uncertain', error=str(error))
+                raise
+            finally:
+                self.events.append(event)
+                self._journal(event)
+                self.last_input = time.monotonic()
+            return {'number': number, 'status': event['status']}
 
-    def capture(self, identifier, expect=''):
-        checkpoint = self._checkpoint(identifier)
-        expect = expect or checkpoint.get('expect') or ''
-        if expect:
-            self.mobile._target(expect)
-        visible = self.mobile.inspect_ui(limit=40)['nodes']
-        labels = [node['text'] or node['description'] for node in visible]
-        description = ('Human-marked checkpoint; visible UI: '
-                       + '; '.join(label[:100] for label in labels[:16] if label))
-        result = self.mobile.capture(number=checkpoint['number'],
-                                   checkpoint_id=identifier, fixture=checkpoint['fixture'],
-                                   setup=checkpoint['setup'], actions=checkpoint['actions'],
-                                   kinds=checkpoint['artifacts'], observed_state=description,
-                                   observation_source='human_recorder')
-        if expect:
-            self.mobile.replay_plan[-1]['expect'] = expect
-        return result
+    def save(self):
+        with self.lock:
+            self._active()
+            if len(self.shots) >= 100:
+                raise ValueError('100-screen limit reached; finish this batch')
+            self.bookmark = True
+            return {'queued': True}
 
-    def handoff(self):
-        self.handoff_requested = True
-        return self.status()
+    def _manifest(self):
+        payload = {'schema_version': 1, 'kind': 'ditto_exploration',
+                   'eligible_for_phase': False, 'phase_id': self.contract['phase_id'],
+                   'target': self.mobile.target, 'environment': self.mobile.environment,
+                   'package_name': self.mobile.package_name,
+                   'installed_package_sha256': self.mobile.package_sha,
+                   'mcp_receipt': self.mobile.receipt, 'action_log': 'actions.jsonl',
+                   'replay_status': 'unverified', 'shots': self.shots}
+        temporary = self.mobile.stage / 'exploration.tmp'
+        temporary.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+        os.replace(temporary, self.mobile.stage / 'exploration.json')
 
-    def finalize(self):
-        if self.handoff_requested:
-            raise ValueError('recorder handed back; ask the AI to resume')
-        completed = set(self.status()['completed'])
-        missing = set(self.checkpoints) - completed
-        if missing:
-            raise ValueError('capture remaining checkpoints: ' + ', '.join(sorted(missing)))
-        result = self.mobile.finalize()
-        self.mobile.release_device()
-        return result
+    def _sample(self):
+        with self.lock:
+            revision = self.revision
+            png = self.preview
+            if (self.finished or self.closed or png is None
+                    or self.preview_revision != revision
+                    or time.monotonic() - self.last_input < 1.2):
+                return
+            manual = self.bookmark
+            if not manual and self.stable_frames < 2:
+                return
+            if len(self.shots) >= 100:
+                self.warning = '100-screen limit reached; finish this batch.'
+                return
+            fingerprint = sha256(png).hexdigest()
+            if not manual and self.shots and fingerprint == self.shots[-1]['png_sha256']:
+                return
+        # Slow hierarchy capture never holds the input lock. If navigation occurs
+        # concurrently, discard this sample instead of joining different states.
+        xml, warning = None, ''
+        try:
+            xml = self.mobile._hierarchy(timeout=8)
+            for node in ET.fromstring(xml).iter('node'):
+                title = node.get('text', '').lower().replace('’', "'")
+                if (node.get('resource-id') == 'android:id/alertTitle'
+                        and ("isn't responding" in title or 'not responding' in title)):
+                    warning = 'Android ANR dialog captured; finish and diagnose before replay.'
+        except Exception as error:
+            xml = None
+            warning = f'XML unavailable: {error}'
+        with self.lock:
+            if self.finished or self.closed or revision != self.revision:
+                return
+            if self.preview != png:
+                xml = None
+                warning = 'Screen changed during XML capture; review image and recapture XML if needed.'
+            number = len(self.shots) + 1
+            stem = f'{number:03d}'
+            (self.mobile.stage / f'{stem}.png').write_bytes(png)
+            shot = {'number': number, 'png': f'{stem}.png', 'png_sha256': fingerprint,
+                    'after_input': revision, 'manual': manual,
+                    'captured_at': datetime.now(timezone.utc).isoformat(),
+                    'xml': None, 'warning': warning}
+            if xml is not None:
+                (self.mobile.stage / f'{stem}.xml').write_bytes(xml)
+                shot.update(xml=f'{stem}.xml', xml_sha256=sha256(xml).hexdigest())
+            self.shots.append(shot)
+            self.bookmark = False
+            self.warning = warning
+            self._manifest()
+
+    def _refresh(self):
+        while not self.halt.is_set():
+            try:
+                with self.lock:
+                    revision = self.revision
+                png = self.mobile._screen(timeout=5)
+                with self.lock:
+                    if revision == self.revision:
+                        self.stable_frames = self.stable_frames + 1 if png == self.preview else 1
+                        self.preview, self.preview_revision = png, revision
+            except Exception as error:
+                with self.lock:
+                    self.warning = str(error)
+            if self.halt.wait(0.7):
+                break
+
+    def _collect(self):
+        failures = 0
+        while not self.halt.is_set():
+            try:
+                self._sample()
+                failures = 0
+            except Exception as error:
+                failures += 1
+                with self.lock:
+                    self.warning = str(error)
+            if self.halt.wait(min(5, 0.7 * (failures + 1))):
+                break
+
+    def finish(self):
+        with self.lock:
+            if not self.finished:
+                if self.mobile.stage is None:
+                    raise ValueError('no active capture')
+                if self.bookmark:
+                    raise ValueError('bookmark is still saving; pause briefly before Done')
+                if not self.shots:
+                    raise ValueError('wait for a screen to save before Done')
+                self._manifest()
+                os.replace(self.mobile.stage, self.output)
+                self.mobile.stage = self.mobile.output = None
+                self.finished = True
+                self.halt.set()
+        self._join_workers()
+        with self.lock:
+            self.mobile.abort()
+        return {'finished': True, 'export_dir': str(self.output), 'saved': len(self.shots),
+                'eligible_for_phase': False}
+
+    def _join_workers(self):
+        for worker in (self.worker, self.display):
+            if worker is not None:
+                worker.join(timeout=15)
+                if worker.is_alive():
+                    raise RuntimeError('capture worker is still stopping; retry finish/stop')
 
     def start(self):
-        if self.mobile.stage is None:
-            raise ValueError('begin mobile capture before opening the recorder')
+        self._active()
+        if self.mobile.records:
+            raise ValueError('start exploration in a fresh capture, without verified checkpoints')
         if self.server is not None:
             return self.url
         recorder = self
+        # Keep setup actions performed before the panel, including declared resets.
+        self._journal({'status': 'initial', 'actions': list(self.mobile.actions),
+                       'fixture_note': 'begin launches existing app data; reset only if explicitly prepared'})
+        self._manifest()
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -231,9 +293,9 @@ class Recorder:
             def _authorized(self):
                 return parse_qs(urlparse(self.path).query).get('token', [''])[0] == recorder.token
 
-            def _send(self, status, data, mime='application/json'):
-                payload = (json.dumps(data).encode() if mime == 'application/json' else data)
-                self.send_response(status)
+            def _send(self, code, data, mime='application/json'):
+                payload = json.dumps(data).encode() if mime == 'application/json' else data
+                self.send_response(code)
                 self.send_header('Content-Type', mime)
                 self.send_header('Content-Length', str(len(payload)))
                 self.send_header('Cache-Control', 'no-store')
@@ -245,46 +307,46 @@ class Recorder:
                 if not self._authorized():
                     return self._send(403, {'error': 'invalid recorder token'})
                 path = urlparse(self.path).path
-                try:
-                    with recorder.lock:
-                        if path == '/':
-                            html = PANEL.replace('__TOKEN__', json.dumps(recorder.token))
-                            return self._send(200, html.encode(), 'text/html; charset=utf-8')
-                        if path == '/api/status':
-                            return self._send(200, recorder.status())
-                        if path == '/api/screen':
-                            return self._send(200, recorder.mobile._screen(), 'image/png')
-                    self._send(404, {'error': 'unknown route'})
-                except Exception as error:
-                    self._send(400, {'error': str(error)})
+                with recorder.lock:
+                    if path == '/':
+                        return self._send(200, PANEL.replace('__TOKEN__', json.dumps(recorder.token)).encode(),
+                                          'text/html; charset=utf-8')
+                    if path == '/api/status':
+                        return self._send(200, recorder.status())
+                    if path == '/api/preview' and recorder.preview:
+                        return self._send(200, recorder.preview, 'image/png')
+                self._send(404, {'error': 'screen not ready or unknown route'})
 
             def do_POST(self):
                 if not self._authorized():
                     return self._send(403, {'error': 'invalid recorder token'})
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
-                    if not 0 <= length <= 65536:
-                        raise ValueError('request body too large')
-                    request = json.loads(self.rfile.read(length))
+                    if not 0 < length <= 65536:
+                        raise ValueError('invalid request body size')
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict):
+                        raise ValueError('request must be an object')
                     path = urlparse(self.path).path
-                    with recorder.lock:
-                        if path == '/api/action':
-                            result = recorder.action(request.get('checkpoint_id'), request)
-                        elif path == '/api/capture':
-                            result = recorder.capture(request.get('checkpoint_id'), request.get('expect', ''))
-                        elif path == '/api/handoff':
-                            result = recorder.handoff()
-                        elif path == '/api/finalize':
-                            result = recorder.finalize()
-                        else:
-                            return self._send(404, {'error': 'unknown route'})
+                    if path == '/api/action':
+                        result = recorder.action(payload)
+                    elif path == '/api/save':
+                        result = recorder.save()
+                    elif path == '/api/finish':
+                        result = recorder.finish()
+                    else:
+                        return self._send(404, {'error': 'unknown route'})
                     self._send(200, result)
                 except Exception as error:
                     self._send(400, {'error': str(error)})
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.worker = threading.Thread(target=self._collect, daemon=True)
+        self.display = threading.Thread(target=self._refresh, daemon=True)
         self.thread.start()
+        self.display.start()
+        self.worker.start()
         return self.url
 
     @property
@@ -292,8 +354,14 @@ class Recorder:
         return f'http://127.0.0.1:{self.server.server_port}/?token={self.token}'
 
     def stop(self):
+        with self.lock:
+            self.closed = True
+            self.bookmark = False
+            self.halt.set()
         if self.server is not None:
             self.server.shutdown()
             self.server.server_close()
             self.thread.join(timeout=3)
             self.server = self.thread = None
+        self._join_workers()
+        self.stopped = True

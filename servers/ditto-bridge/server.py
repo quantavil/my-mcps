@@ -54,32 +54,41 @@ if ROLE == 'mobile-control':
     def inspect_ui(query: str = '', limit: int = 60) -> dict:
         """Read compact visible labels, resource IDs, and bounds without image output."""
         with controller_lock:
+            if RECORDER is not None:
+                raise ValueError('human recorder owns hierarchy capture; finish and stop it first')
             return MOBILE.inspect_ui(query, limit)
 
     @mcp.tool()
-    def recorder_control(operation: Literal['start', 'status', 'stop'],
+    def recorder_control(operation: Literal['start', 'status', 'finish', 'stop'],
                          contract_path: str | None = None,
                          checkpoint_ids: list[str] | None = None) -> dict:
-        """Open/close a localhost still-image panel for original or clone capture.
+        """Open a localhost walkthrough: free taps/swipes/back/type, automatic stills.
 
-        Begin a package-bound mobile capture first. Human clicks in the panel
-        use the same controller and receipt; no video or cloud service is used.
-        checkpoint_ids optionally limits capture to selected contract checkpoints.
-        Stop preserves pending actions and completed captures for AI takeover.
+        Begin package-bound capture first. The checklist guides, never gates input.
+        Save screen bookmarks a candidate; pauses auto-save distinct screens and
+        available XML. Input logs preserve detours/failures. AI reviews candidates
+        and validates replay while collecting declared phase checkpoints.
+        Finish exports exploration.json/actions.jsonl/PNGs/XML and releases the device.
+        Stop closes the panel; then finish to keep candidates or mobile abort to discard.
+        No video, cloud service, or direct-emulator click recording.
         """
         global RECORDER
         if operation == 'stop':
             with controller_lock:
                 recorder = RECORDER
-                if recorder is not None:
-                    recorder.handoff()
             # HTTP handlers acquire this lock too; do not join them while holding it.
             if recorder is not None:
                 recorder.stop()
             with controller_lock:
-                if RECORDER is recorder:
+                if RECORDER is recorder and recorder is not None and recorder.finished:
                     RECORDER = None
-            return {'active': False}
+            return {'active': False, 'capture_pending': RECORDER is not None}
+        if operation == 'finish':
+            with controller_lock:
+                recorder = RECORDER
+            if recorder is None:
+                raise ValueError('no active recorder')
+            return recorder.finish()
         with controller_lock:
             if operation == 'start':
                 if MOBILE.preview_mode:
@@ -96,7 +105,7 @@ if ROLE == 'mobile-control':
                     raise
             if operation == 'status':
                 return {'active': RECORDER is not None,
-                        'url': RECORDER.url if RECORDER is not None else None,
+                        'url': RECORDER.url if RECORDER is not None and RECORDER.server is not None else None,
                         'progress': RECORDER.status() if RECORDER is not None else None}
             raise ValueError('unknown recorder operation')
 
@@ -143,10 +152,13 @@ if ROLE == 'mobile-control':
         observation, to be checked against PNG/XML; command success alone is not UI success.
         Finalize retains capture; abort ends a capture or preview. Both release ownership.
         """
+        global RECORDER
         with controller_lock:
-            if RECORDER is not None and operation in ('perform', 'replay', 'run_checkpoints',
-                                                      'capture', 'recover', 'finalize', 'abort'):
-                raise ValueError('stop the human recorder before AI-driven capture')
+            if RECORDER is not None:
+                if operation == 'abort' and RECORDER.stopped:
+                    RECORDER = None
+                else:
+                    raise ValueError('finish/stop the human recorder before AI-driven control; stop then abort to discard')
             if operation in ('probe', 'begin', 'preview_begin'):
                 if not serial:
                     raise ValueError('serial is required')

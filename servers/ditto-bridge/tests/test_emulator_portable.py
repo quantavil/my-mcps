@@ -101,6 +101,16 @@ class PortableEmulatorTests(unittest.TestCase):
                 manager.wait_for_boot()
             self.assertLessEqual(adb.call_args.kwargs["timeout"], 1)
 
+    def test_emulator_exit_fails_without_waiting_entire_boot_timeout(self):
+        from unittest.mock import Mock
+        manager = Manager(self.env)
+        manager.process = Mock()
+        manager.process.poll.return_value = 1
+        with patch.object(manager, 'adb_command') as adb:
+            with self.assertRaisesRegex(RuntimeError, 'exited before boot'):
+                manager.wait_for_boot()
+            adb.assert_not_called()
+
     def test_failed_adb_query_propagates_without_launch(self):
         manager = Manager(self.env)
         with patch.object(manager, "run", side_effect=subprocess.CalledProcessError(1, ["adb"])), \

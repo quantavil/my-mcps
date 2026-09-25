@@ -28,9 +28,17 @@ and hierarchy capture. Probe and capture reuse an installed APK only after verif
 exports declared PNG, XML, trace, or state artifacts with `capture.json`.
 Use `tap_target` to wait for a control and tap it, and a unique `expect` marker
 on each checkpoint to guard screen transitions. Fixed waits are for states without usable targets.
-`recorder_control` opens a local still-image panel for optional human navigation
-on either app, with contract-ordered checkpoint selection and a return-control button.
-Stopping the recorder preserves the capture session for the AI to resume.
+`recorder_control` opens a localhost browser walkthrough inside mobile-control.
+Humans navigate freely with taps, swipes, Back and supported text; a phase checklist
+guides them without enforcing action order. Separate workers refresh stills and
+save candidate PNG/XML during pauses; optional Save screen bookmarks are available.
+Input never waits for hierarchy capture. `actions.jsonl` preserves attempts,
+results and detours; `exploration.json` links candidates to input positions.
+Candidates are not phase evidence and their replay is unverified. AI selects
+useful states, builds/tests guarded routes, and captures verified checkpoints.
+Done/finish exports the pack and releases the device; stop closes the panel.
+After stop, finish preserves candidates or mobile abort discards them. After
+finish, stop clears the recorder. Direct emulator clicks are not recorded.
 `capture.json` embeds candidate replay steps and session/ADB timings.
 `run_checkpoints(plan_path=...)` loads that export or a reviewed `{ "plan": [...] }`
 file; every loaded checkpoint needs an expected-screen marker. Review fixtures and
@@ -46,6 +54,16 @@ requested. Use only a declared fixture and checkpoint protocol; the controller
 cannot determine whether a tap reached the intended app state by itself.
 
 ## Verification
+
+The September 25 free-navigation recorder check used the original
+`my_period_calendar_v13.2.0.apk` on `floww_light` (Android 14, 720×1600/280 dpi,
+software graphics), through a fresh FastMCP client. The input endpoint logged
+an executed tap; automatic capture retained three candidate images, marking
+transitional XML gaps explicitly. Visual inspection of the PNG/XML pair showed
+an Android System UI ANR, not a usable app checkpoint. Finish exported the pack
+and released the device. This checks transport/capture lifecycle only; a usable
+human walkthrough and full app replay remain unverified on this emulator.
+The recorder now flags ANR titles in captured XML. Native Windows remains untested.
 
 The September 25, 2026 trial installed uiautomator2 3.7.0 in an isolated uv
 environment, but the Floww debug-APK probe stopped at a System UI ANR before

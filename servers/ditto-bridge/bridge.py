@@ -387,8 +387,8 @@ class MobileController:
             raise BridgeError(f'emulator identity differs: expected {target_id}, found {avd}')
         self.target = {'kind': 'emulator', 'id': target_id}
 
-    def _screen(self):
-        shot = self._bytes('exec-out', 'screencap', '-p')
+    def _screen(self, timeout=60):
+        shot = self._bytes('exec-out', 'screencap', '-p', timeout=timeout)
         if not shot.startswith(b'\x89PNG\r\n\x1a\n'):
             raise BridgeError('emulator screenshot is not PNG')
         return shot
@@ -770,7 +770,7 @@ class MobileController:
                 'replay_required': True, 'capture_active': True}
 
     def capture(self, number, checkpoint_id, fixture, setup, actions, kinds,
-                observed_state=None, observation_source='agent'):
+                observed_state=None):
         if self.stage is None:
             raise BridgeError('begin capture before checkpoint capture')
         if (not isinstance(number, int) or not 1 <= number <= 999
@@ -793,8 +793,6 @@ class MobileController:
             raise BridgeError('declared action protocol differs from executed steps')
         if not isinstance(observed_state, str) or not observed_state.strip():
             raise BridgeError('capture needs an observed_state description to review against the image')
-        if observation_source not in ('agent', 'human_recorder'):
-            raise BridgeError('unknown observation source')
         if self._environment() != self.environment:
             raise BridgeError('capture environment changed; begin a new session and restore matching settings')
         if 'trace' in kinds and not self.actions:
@@ -808,7 +806,7 @@ class MobileController:
             data['xml'] = self._hierarchy()
         if 'trace' in kinds:
             data['trace'] = (json.dumps({'actions': self.actions, 'observed_state': observed_state,
-                                        'observation_source': observation_source,
+                                        'observation_source': 'agent',
                                         'verify_against': 'PNG/XML'}, indent=2)
                              + '\n').encode()
         if 'state' in kinds:
@@ -830,15 +828,13 @@ class MobileController:
                 'fixture': fixture, 'setup_sha256': digest_json(setup),
                 'actions_sha256': digest_json(executed),
                 'executed_actions': list(self.actions), 'observed_state': observed_state,
-                'observation_source': observation_source,
+                'observation_source': 'agent',
             })
         self.records.extend(records)
         steps = []
         for event in self.actions:
             step = {'action': event['action'], **{key: value for key, value in
                     event['arguments'].items() if key != 'bounds'}}
-            if event.get('replay_selector'):
-                step = {'action': 'tap_target', 'selector': event['replay_selector']}
             if event.get('step'):
                 step['step'] = event['step']
             steps.append(step)

@@ -31,6 +31,7 @@ class Manager:
         self.port = port
         self.serial = f"emulator-{port}"
         self.boot_timeout = int(timeout)
+        self.process = None
         self.gpu = env.get("DITTO_GPU") or "auto"
         self.accel = env.get("DITTO_ACCEL") or "auto"
         if self.accel not in ("auto", "on", "off"):
@@ -70,6 +71,8 @@ class Manager:
     def wait_for_boot(self):
         deadline = time.monotonic() + self.boot_timeout
         while time.monotonic() < deadline:
+            if self.process is not None and self.process.poll() is not None:
+                raise RuntimeError(f'Emulator exited before boot; inspect {self.log}')
             remaining = max(0.01, deadline - time.monotonic())
             try:
                 completed = self.adb_command("shell", "getprop", "sys.boot_completed", timeout=min(5, remaining))
@@ -95,11 +98,28 @@ class Manager:
             args = [self.emulator, "-avd", self.avd, "-port", self.port, "-gpu", self.gpu, "-accel", self.accel]
             if headless:
                 args += ["-no-window", "-no-audio", "-no-boot-anim"]
+            launch_env = os.environ.copy()
+            if not headless and not self.windows and sys.platform == "linux" and not launch_env.get("DISPLAY"):
+                runtime = launch_env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+                session_env = {**launch_env, "XDG_RUNTIME_DIR": runtime,
+                               "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus"}
+                try:
+                    current = subprocess.run(["systemctl", "--user", "show-environment"],
+                                             env=session_env, capture_output=True, text=True,
+                                             timeout=3, check=True).stdout
+                except (OSError, subprocess.SubprocessError):
+                    current = ""
+                for line in current.splitlines():
+                    key, _, value = line.partition("=")
+                    if key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY") and value:
+                        launch_env[key] = value
+                if not launch_env.get("DISPLAY"):
+                    raise RuntimeError("Visible emulator needs DISPLAY from the desktop session")
             detach = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
                       if self.windows else {"start_new_session": True})
             with self.log.open("ab") as log:
-                subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                 close_fds=True, **detach)
+                self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                 close_fds=True, env=launch_env, **detach)
             print(f"Starting {self.serial} ({self.avd}, gpu={self.gpu}, accel={self.accel}); log: {self.log}")
         self.wait_for_boot()
         self.identity()

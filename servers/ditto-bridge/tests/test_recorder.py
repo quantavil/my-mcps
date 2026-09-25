@@ -1,151 +1,218 @@
-"""Human oracle capture uses the same controller and receipts as AI capture."""
+"""Free navigation, asynchronous capture, and recoverable exploration evidence."""
 import json
+from pathlib import Path
 import shutil
 import subprocess
-from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from recorder import PANEL, Recorder
 
 
 class RecorderTests(unittest.TestCase):
-    @unittest.skipUnless(shutil.which('node'), 'Node is only needed to check browser JavaScript syntax')
-    def test_browser_panel_javascript_is_valid(self):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.path = root / 'phase.json'
+        self.path.write_text(json.dumps({'phase_id': 'setup', 'checkpoints': [
+            {'id': 'role', 'capture_when': 'Self is selected'},
+            {'id': 'goal', 'capture_when': 'Conceive is selected'}]}))
+        self.mobile = MagicMock()
+        self.mobile.stage = root / 'stage'
+        self.mobile.stage.mkdir()
+        self.mobile.output = root / 'export'
+        self.mobile._screen.return_value = b'\x89PNG\r\n\x1a\nimage'
+        self.mobile._hierarchy.return_value = b'<hierarchy/>'
+        self.mobile.target = {'id': 'device'}
+        self.mobile.environment = {'density': 280}
+        self.mobile.package_name = 'example.original'
+        self.mobile.package_sha = 'abc'
+        self.mobile.receipt = {'server': 'ditto-mobile-control'}
+        self.mobile.preview_mode = False
+        self.mobile.records = []
+        self.mobile.actions = []
+        self.mobile.perform.return_value = {'result': 'command_executed'}
+        self.recorder = Recorder(self.mobile, self.path)
+        self.addCleanup(self.recorder.stop)
+
+    def sample(self, png=None):
+        self.recorder.preview = png or self.mobile._screen.return_value
+        self.recorder.preview_revision = self.recorder.revision
+        self.recorder.stable_frames = 2
+        self.recorder.last_input = time.monotonic() - 2
+        self.recorder._sample()
+
+    @unittest.skipUnless(shutil.which('node'), 'Node checks browser JavaScript syntax')
+    def test_panel_javascript(self):
         script = PANEL.split('<script>')[1].split('</script>')[0].replace('__TOKEN__', '"test"')
         result = subprocess.run([shutil.which('node'), '--check'], input=script,
                                 text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        contract = {'phase_id': 'setup', 'checkpoints': [
-            {'number': 1, 'id': 'role', 'fixture': 'fresh', 'setup': 'At role',
-             'actions': ['Choose self'], 'artifacts': ['png', 'xml', 'trace']},
-        ]}
-        self.path = Path(self.temp.name) / 'phase.json'
-        self.path.write_text(json.dumps(contract), encoding='utf-8')
-        self.mobile = MagicMock()
-        self.mobile.stage = Path(self.temp.name)
-        self.mobile.actions = []
-        self.mobile.records = []
-        self.mobile.perform.return_value = {'action': 'tap'}
-        self.mobile.inspect_ui.return_value = {'nodes': [
-            {'text': 'For myself', 'description': '', 'resource_id': '',
-             'bounds': [1, 2, 3, 4], 'clickable': True, 'package': 'app'}],
-            'truncated': False}
-        self.recorder = Recorder(self.mobile, self.path)
+    def test_free_navigation_and_failed_input_preserve_raw_log(self):
+        for action in ({'action': 'tap', 'x': 10, 'y': 20}, {'action': 'back'}, {'action': 'back'}):
+            self.recorder.action(action)
+        self.mobile.perform.side_effect = RuntimeError('ADB disconnected')
+        with self.assertRaisesRegex(RuntimeError, 'disconnected'):
+            self.recorder.action({'action': 'back'})
+        log = [json.loads(line) for line in (self.mobile.stage / 'actions.jsonl').read_text().splitlines()]
+        self.assertEqual(len(log), 8)
+        self.assertEqual([e['status'] for e in log[-2:]], ['requested', 'uncertain'])
+        self.assertEqual(self.recorder.revision, 4)
+        self.mobile.inspect_ui.assert_not_called()
+        self.mobile.capture.assert_not_called()
+        self.mobile._hierarchy.assert_not_called()
 
-    def test_declared_and_incidental_taps_are_distinct(self):
-        self.recorder.action('role', {'action': 'tap', 'x': 10, 'y': 20,
-                                      'incidental': True})
-        self.mobile.perform.assert_called_with('tap', x=10, y=20, step=None)
-        self.recorder.action('role', {'action': 'tap', 'x': 30, 'y': 40})
-        self.mobile.perform.assert_called_with('tap', x=30, y=40, step='Choose self')
+    def test_auto_dedup_and_manual_bookmark(self):
+        self.sample()
+        self.recorder.action({'action': 'back'})
+        self.sample()  # same screen after a harmless back press
+        self.assertEqual(len(self.recorder.shots), 1)
+        self.recorder.save()
+        self.sample()
+        self.assertEqual(len(self.recorder.shots), 2)
+        self.assertTrue(self.recorder.shots[-1]['manual'])
+        self.assertEqual(self.recorder.shots[-1]['after_input'], 1)
 
-    def test_tap_records_unique_selector_for_later_replay(self):
-        event = self.recorder.action('role', {'action': 'tap', 'x': 2, 'y': 3})
-        self.assertEqual(event['replay_selector'], 'For myself')
-        self.mobile.perform.assert_called_with('tap', x=2, y=3, step='Choose self')
+    def test_delayed_transition_without_another_input_is_captured(self):
+        self.sample()
+        self.sample(b'next settled screen')
+        self.assertEqual(len(self.recorder.shots), 2)
+        self.assertEqual([shot['after_input'] for shot in self.recorder.shots], [0, 0])
 
-    def test_human_guide_comes_from_the_checkpoint_and_fixture(self):
-        contract = json.loads(self.path.read_text())
-        contract['fixtures'] = {'fresh': {'name': 'Ada'}}
-        contract['checkpoints'][0].update(capture_when='Self is selected and Continue is enabled.',
-                                          expect='For myself')
-        self.path.write_text(json.dumps(contract))
-        recorder = Recorder(self.mobile, self.path)
-        checkpoint = recorder.status()['checkpoints'][0]
-        self.assertEqual(checkpoint['setup'], 'At role')
-        self.assertEqual(checkpoint['capture_when'], 'Self is selected and Continue is enabled.')
-        self.assertEqual(checkpoint['fixture_values'], {'name': 'Ada'})
-        self.mobile.replay_plan = [{}]
-        recorder.capture('role')
-        self.mobile._target.assert_called_once_with('For myself')
-        self.assertEqual(self.mobile.replay_plan[0]['expect'], 'For myself')
+    def test_navigation_during_xml_is_nonblocking_and_discards_mixed_sample(self):
+        entered, release = threading.Event(), threading.Event()
+        self.mobile._hierarchy.side_effect = lambda **_: (entered.set(), release.wait(2), b'<hierarchy/>')[-1]
+        worker = threading.Thread(target=self.sample)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            self.recorder.action({'action': 'back'})
+            self.assertEqual(self.recorder.revision, 1)
+        finally:
+            release.set()
+            worker.join(2)
+        self.assertEqual(self.recorder.shots, [])
 
-    def test_ambiguous_labels_keep_coordinate_replay(self):
-        node = dict(self.mobile.inspect_ui.return_value['nodes'][0])
-        node['bounds'] = [20, 20, 40, 40]
-        self.mobile.inspect_ui.return_value['nodes'].append(node)
-        event = self.recorder.action('role', {'action': 'tap', 'x': 2, 'y': 3})
-        self.assertNotIn('replay_selector', event)
+    def test_xml_failure_keeps_image_with_explicit_gap(self):
+        self.mobile._hierarchy.side_effect = RuntimeError('timeout')
+        self.sample()
+        self.assertEqual(len(self.recorder.shots), 1)
+        self.assertIsNone(self.recorder.shots[0]['xml'])
+        self.assertIn('timeout', self.recorder.shots[0]['warning'])
 
-    def test_subset_keeps_contract_order_and_rejects_unknown_ids(self):
-        contract = json.loads(self.path.read_text())
-        contract['checkpoints'].append({**contract['checkpoints'][0], 'number': 2, 'id': 'goal'})
-        self.path.write_text(json.dumps(contract))
-        recorder = Recorder(self.mobile, self.path, checkpoint_ids=['goal'])
-        self.assertEqual(list(recorder.checkpoints), ['goal'])
-        recorder.action('goal', {'action': 'tap', 'x': 10, 'y': 20})
-        with self.assertRaisesRegex(ValueError, 'unknown'):
-            Recorder(self.mobile, self.path, checkpoint_ids=['missing'])
+    def test_anr_is_retained_as_a_warning_not_an_app_success(self):
+        self.mobile._hierarchy.return_value = b"""<hierarchy><node resource-id="android:id/alertTitle" text="System UI isn't responding"/></hierarchy>"""
+        self.sample()
+        self.assertIn('ANR', self.recorder.shots[0]['warning'])
+        self.assertIn('ANR', self.recorder.status()['warning'])
 
-    def test_stop_preserves_capture_and_pending_actions(self):
-        self.mobile.actions = [{'step': 'Choose self'}]
-        self.recorder.start()
+    def test_scene_change_while_xml_runs_does_not_claim_pair(self):
+        def change(**_):
+            self.recorder.preview = b'changed'
+            return b'<hierarchy/>'
+        self.mobile._hierarchy.side_effect = change
+        self.sample()
+        self.assertIsNone(self.recorder.shots[0]['xml'])
+
+    def test_finish_exports_candidates_and_stop_keeps_finish_available(self):
+        self.recorder.action({'action': 'back'})
+        self.sample()
         self.recorder.stop()
-        self.assertEqual(self.mobile.actions, [{'step': 'Choose self'}])
+        result = self.recorder.finish()
+        self.assertFalse(result['eligible_for_phase'])
+        pack = json.loads((Path(result['export_dir']) / 'exploration.json').read_text())
+        self.assertFalse(pack['eligible_for_phase'])
+        self.assertEqual(pack['replay_status'], 'unverified')
+        self.assertEqual(pack['shots'][0]['after_input'], 1)
+        self.assertTrue((Path(result['export_dir']) / 'actions.jsonl').exists())
+        self.mobile.abort.assert_called_once()
+        with self.assertRaisesRegex(ValueError, 'no active'):
+            self.recorder.action({'action': 'back'})
+        self.assertTrue(self.recorder.finish()['finished'])
+
+    def test_finish_rejects_unsaved_bookmark_and_empty_pack(self):
+        with self.assertRaisesRegex(ValueError, 'wait for a screen'):
+            self.recorder.finish()
+        self.recorder.save()
+        with self.assertRaisesRegex(ValueError, 'still saving'):
+            self.recorder.finish()
         self.mobile.abort.assert_not_called()
-        self.mobile.finalize.assert_not_called()
 
-    def test_handoff_freezes_panel_without_finalizing_capture(self):
-        self.assertTrue(self.recorder.handoff()['handoff_requested'])
-        with self.assertRaisesRegex(ValueError, 'handed back'):
-            self.recorder.action('role', {'action': 'tap', 'x': 10, 'y': 20})
-        self.mobile.records = [{'checkpoint_id': 'role'}]
-        with self.assertRaisesRegex(ValueError, 'handed back'):
-            self.recorder.finalize()
-        self.mobile.finalize.assert_not_called()
+    def test_limit_cannot_leave_an_unsavable_bookmark(self):
+        self.recorder.shots = [{}] * 100
+        with self.assertRaisesRegex(ValueError, 'limit'):
+            self.recorder.save()
+        self.assertFalse(self.recorder.bookmark)
 
-    def test_capture_uses_contract_names_and_auto_observed_text(self):
-        self.mobile.actions = [{'step': 'Choose self'}]
-        self.recorder.capture('role')
-        self.mobile.capture.assert_called_once()
-        args = self.mobile.capture.call_args.kwargs
-        self.assertEqual(args['checkpoint_id'], 'role')
-        self.assertEqual(args['actions'], ['Choose self'])
-        self.assertIn('For myself', args['observed_state'])
-        self.assertEqual(args['observation_source'], 'human_recorder')
-
-    def test_invalid_checkpoint_cannot_issue_a_tap(self):
-        with self.assertRaisesRegex(ValueError, 'unknown checkpoint'):
-            self.recorder.action('missing', {'action': 'tap', 'x': 1, 'y': 2})
+    def test_bad_action_is_rejected_before_device_input(self):
+        for payload in ({'action': 'reset'}, {'action': 'back', 'step': 'declared'},
+                        {'action': 'tap', 'x': True, 'y': 2}):
+            with self.assertRaises(ValueError):
+                self.recorder.action(payload)
         self.mobile.perform.assert_not_called()
 
-    def test_completed_checkpoint_cannot_be_recorded_again(self):
-        self.mobile.records = [{'checkpoint_id': 'role'}]
-        with self.assertRaisesRegex(ValueError, 'already complete'):
-            self.recorder.action('role', {'action': 'tap', 'x': 1, 'y': 2})
-
-    def test_finalize_releases_device_after_all_checkpoints(self):
-        self.mobile.records = [{'checkpoint_id': 'role'}]
-        self.mobile.finalize.return_value = {'export_dir': '/tmp/capture'}
-        self.assertEqual(self.recorder.finalize()['export_dir'], '/tmp/capture')
-        self.mobile.release_device.assert_called_once()
-
-    def test_local_panel_requires_token_and_routes_taps_to_controller(self):
-        url = self.recorder.start()
-        self.addCleanup(self.recorder.stop)
+    def test_http_token_and_real_action_endpoint(self):
+        # Start HTTP only; separate tests exercise collection races deterministically.
+        with patch.object(self.recorder, '_collect'), patch.object(self.recorder, '_refresh'):
+            url = self.recorder.start()
+        base, token = url.split('/?token=')
         with self.assertRaises(HTTPError) as denied:
-            urlopen(url.split('?')[0] + 'api/status', timeout=2)
+            urlopen(base + '/api/status', timeout=2)
         self.assertEqual(denied.exception.code, 403)
-        base = url.split('/?')[0]
-        token = url.split('token=', 1)[1]
-        request = Request(base + '/api/action?token=' + token,
-                          data=json.dumps({'checkpoint_id': 'role', 'action': 'tap',
-                                           'x': 10, 'y': 20}).encode(),
+        request = Request(base + '/api/action?token=' + token, data=b'{"action":"back"}',
                           headers={'Content-Type': 'application/json'}, method='POST')
         with urlopen(request, timeout=2) as response:
-            self.assertEqual(response.status, 200)
-        self.mobile.perform.assert_called_with('tap', x=10, y=20, step='Choose self')
+            self.assertEqual(json.load(response)['status'], 'executed')
+        self.mobile.perform.assert_called_once_with(action='back')
+        self.sample()
+        self.recorder.finish()
+        with urlopen(base + '/api/preview?token=' + token, timeout=2) as response:
+            self.assertEqual(response.read(), self.mobile._screen.return_value)
+
+    def test_mcp_stop_then_finish_keeps_pack_and_clears_handle(self):
+        import asyncio
+        import importlib.util
+        import os
+        from fastmcp import Client
+        spec = importlib.util.spec_from_file_location('recorder_lifecycle_server',
+            Path(__file__).resolve().parent.parent / 'server.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {'DITTO_ROLE': 'mobile-control'}):
+            spec.loader.exec_module(module)
+        module.MOBILE = self.mobile
+        async def check():
+            async with Client(module.mcp) as client:
+                with patch.object(Recorder, '_collect'), patch.object(Recorder, '_refresh'):
+                    await client.call_tool('recorder_control', {
+                        'operation': 'start', 'contract_path': str(self.path)})
+                self.recorder = module.RECORDER
+                try:
+                    self.sample()
+                    await client.call_tool('recorder_control', {'operation': 'stop'})
+                    status = await client.call_tool('recorder_control', {'operation': 'status'})
+                    self.assertIsNone(status.data['url'])
+                    result = await client.call_tool('recorder_control', {'operation': 'finish'})
+                    self.assertEqual(result.data['saved'], 1)
+                    await client.call_tool('recorder_control', {'operation': 'stop'})
+                    self.assertIsNone(module.RECORDER)
+                finally:
+                    self.recorder.stop()
+        asyncio.run(check())
+
+    def test_guide_filter_validation(self):
+        selected = Recorder(self.mobile, self.path, checkpoint_ids=['goal'])
+        self.assertEqual([c['id'] for c in selected.status()['checkpoints']], ['goal'])
+        with self.assertRaisesRegex(ValueError, 'unknown'):
+            Recorder(self.mobile, self.path, checkpoint_ids=['missing'])
 
 
 if __name__ == '__main__':
