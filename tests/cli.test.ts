@@ -137,7 +137,7 @@ describe("runDeploy and runSync", () => {
     const claudePath = path.join(tempHome, ".claude.json");
     const rawClaude = await fs.promises.readFile(claudePath, "utf-8");
     const parsedClaude = JSON.parse(rawClaude);
-    expect(parsedClaude.mcpServers["managed-filesystem"].args[2]).toBe(path.join(tempHome, "docs"));
+    expect(path.normalize(parsedClaude.mcpServers["managed-filesystem"].args[2])).toBe(path.normalize(path.join(tempHome, "docs")));
     expect(parsedClaude.mcpServers["managed-github"].env.GITHUB_TOKEN).toBe("ghp_secret_12345");
   });
 

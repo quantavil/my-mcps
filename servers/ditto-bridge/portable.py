@@ -40,7 +40,24 @@ def sdk_tool(name, env=None, windows=None):
         candidate = sdk_root(env, windows) / folder / f'{name}{suffix}'
         if candidate.is_file() or env.get("ANDROID_HOME") or env.get("ANDROID_SDK_ROOT"):
             return str(candidate)
-    return shutil.which(name + suffix, path=env.get('PATH')) or (str(candidate) if name != 'aapt' else name)
+    path = env.get('PATH') if (env is os.environ or 'PATH' in env) else ''
+    return shutil.which(name + suffix, path=path) or (str(candidate) if name != 'aapt' else name)
+
+
+def java_bin(env=None):
+    env = os.environ if env is None else env
+    if env.get('DITTO_JAVA_BIN'):
+        return env['DITTO_JAVA_BIN']
+    if env.get('JAVA_HOME'):
+        suffix = '.exe' if os.name == 'nt' else ''
+        cand = Path(env['JAVA_HOME']) / 'bin' / f'java{suffix}'
+        if cand.is_file():
+            return str(cand)
+    if os.name == 'nt':
+        local = Path(env.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'Programs/jdk-21/bin/java.exe'
+        if local.is_file():
+            return str(local)
+    return 'java'
 
 
 def command(binary, args=()):
@@ -48,10 +65,10 @@ def command(binary, args=()):
     executable = shutil.which(str(binary)) or str(binary)
     path = Path(executable)
     if path.suffix.lower() == '.jar':
-        return [os.environ.get('DITTO_JAVA_BIN', 'java'), '-jar', executable, *map(str, args)]
+        return [java_bin(), '-jar', executable, *map(str, args)]
     if path.suffix.lower() in ('.bat', '.cmd'):
         if path.stem == 'jadx' and (path.parent.parent / 'lib').is_dir():
-            return [os.environ.get('DITTO_JAVA_BIN', 'java'), '-cp',
+            return [java_bin(), '-cp',
                     str(path.parent.parent / 'lib/*'), 'jadx.cli.JadxCLI', *map(str, args)]
         if path.stem == 'apktool' and path.with_suffix('.jar').is_file():
             return command(str(path.with_suffix('.jar')), args)
