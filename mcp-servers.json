@@ -126,6 +126,13 @@
       },
       "description": "Local emulator controller with package-bound Ditto capture receipts"
     },
+    "ditto2": {
+      "command": "${MCP_ROOT}/servers/ditto2/.venv/bin/python",
+      "args": [
+        "${MCP_ROOT}/servers/ditto2/server.py"
+      ],
+      "description": "Independent APK analysis, DroidBot exploration, and unified evidence"
+    },
     "dart": {
       "command": "dart",
       "args": [
