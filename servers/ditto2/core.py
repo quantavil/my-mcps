@@ -48,21 +48,45 @@ def _apk(path):
     return path
 
 
+def _script(path):
+    if path is None:
+        return None
+    if not isinstance(path, (str, Path)) or not str(path).strip():
+        raise Ditto2Error('script path must be a valid file path')
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise Ditto2Error(f'script file is missing: {path}')
+    data = _json(path)
+    if not isinstance(data, dict):
+        raise Ditto2Error(f'script must be a JSON object: {path}')
+    for section in ('views', 'states', 'operations', 'main'):
+        if not isinstance(data.get(section), dict):
+            raise Ditto2Error(f'script requires a {section} object: {path}')
+    return path
+
+
 def _binary(name, overrides=None):
     chosen = (overrides or {}).get(name, name)
     found = shutil.which(str(chosen))
     if found is None and str(chosen) == name:
         found = shutil.which(str(Path(sys.executable).parent / name))
+    if found is None and str(chosen) == name and name == 'adb':
+        for sdk in (os.environ.get('ANDROID_HOME'), os.environ.get('ANDROID_SDK_ROOT'),
+                    Path.home() / 'Android' / 'Sdk'):
+            if sdk:
+                found = shutil.which(str(Path(sdk) / 'platform-tools' / 'adb'))
+                if found:
+                    break
     if found is None:
         raise Ditto2Error(f'{name} executable is missing; install it on PATH')
     return found
 
 
-def _run(command, log_path, timeout, stdout_path=None, accepted_codes=(0,)):
+def _run(command, log_path, timeout, stdout_path=None, accepted_codes=(0,), env=None):
     with Path(log_path).open('wb') as log:
         with (Path(stdout_path).open('wb') if stdout_path else nullcontext(log)) as output:
             with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output,
-                                  stderr=log, start_new_session=True) as process:
+                                  stderr=log, start_new_session=True, env=env) as process:
                 try:
                     code = process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired as error:
@@ -122,6 +146,19 @@ def analyze_apk(apk_path, output_dir, binaries=None):
                          root / 'jadx.log', 1800, accepted_codes=(0, 3))
         if not (root / 'jadx').is_dir():
             raise Ditto2Error('JADX exited without producing an export')
+        fallback = None
+        if jadx_code == 3:
+            fallback = {'status': 'failed', 'mode': 'fallback', 'log': 'jadx-fallback.log'}
+            try:
+                fallback_code = _run([programs['jadx'], '-m', 'fallback', '--no-res',
+                                      '-d', str(root / 'jadx' / 'fallback'), str(apk)],
+                                     root / 'jadx-fallback.log', 1800, accepted_codes=(0, 3))
+            except Ditto2Error as error:
+                fallback['error'] = str(error)  # Keep the primary exports usable.
+            else:
+                if (root / 'jadx' / 'fallback').is_dir():
+                    fallback = {'status': 'ok' if fallback_code == 0 else 'partial',
+                                'path': 'jadx/fallback', 'mode': 'fallback'}
         (root / 'r2flutter').mkdir()
         for flag, name in (('-H', 'header'), ('-f', 'functions'), ('-z', 'strings')):
             path = root / 'r2flutter' / f'{name}.json'
@@ -138,12 +175,12 @@ def analyze_apk(apk_path, output_dir, binaries=None):
         result = {'schema_version': 1, 'apk_sha256': apk_sha, 'apk_path': str(apk),
                   'tools': {name: {'status': 'ok', 'path': name} for name in programs}}
         if jadx_code == 3:
-            result['tools']['jadx'].update(status='partial', exit_code=jadx_code)
+            result['tools']['jadx'].update(status='partial', exit_code=jadx_code, fallback=fallback)
         (root / 'analysis.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     return {**result, 'output_dir': str(root)}
 
 
-def explore_apk(apk_path, output_dir, serial, count=100, timeout=600, binary='droidbot', adb_binary='adb'):
+def explore_apk(apk_path, output_dir, serial, count=100, timeout=600, script_path=None, binary='droidbot', adb_binary='adb'):
     """Explore one device, preserving the app and all recorded artifacts."""
     apk = _apk(apk_path)
     apk_sha = _sha256(apk)
@@ -153,13 +190,23 @@ def explore_apk(apk_path, output_dir, serial, count=100, timeout=600, binary='dr
         raise Ditto2Error('count must be 1..1000 and timeout 30..3600 seconds')
     program = _binary('droidbot', {'droidbot': binary})
     adb = _binary('adb', {'adb': adb_binary})
+    script = _script(script_path)
     with _export(output_dir) as root:
+        target_script = None
+        if script is not None:
+            target_script = root / 'script.json'
+            if script != target_script:
+                shutil.copyfile(script, target_script)
         _run([adb, '-s', serial, 'install', '-r', str(apk)], root / 'adb.log', 180)
         command = [program, '-a', str(apk), '-d', serial, '-o', str(root), '-keep_app',
                    '-count', str(count), '-timeout', str(timeout)]
+        if target_script is not None:
+            command.extend(['-script', str(target_script)])
         if 'emulator' in serial.casefold():
             command.append('-is_emulator')
-        _run(command, root / 'droidbot.log', timeout + 60)
+        # DroidBot invokes adb by name internally; use the same SDK as installation.
+        child_env = {**os.environ, 'PATH': str(Path(adb).parent) + os.pathsep + os.environ.get('PATH', '')}
+        _run(command, root / 'droidbot.log', timeout + 60, env=child_env)
         graph = _read_utg(root)
         if graph.get('app_sha256') != apk_sha or _sha256(apk) != apk_sha:
             raise Ditto2Error('DroidBot output APK hash differs from the supplied APK')
@@ -172,8 +219,11 @@ def explore_apk(apk_path, output_dir, serial, count=100, timeout=600, binary='dr
                 _inside(root, node['image'])
             except Ditto2Error as error:
                 raise Ditto2Error(f'DroidBot screenshot is missing: {node["image"]}') from error
-    return {'apk_sha256': apk_sha, 'device_serial': serial, 'output_dir': str(root),
-            'screens': len(graph['nodes']), 'transitions': len(graph['edges'])}
+    result = {'apk_sha256': apk_sha, 'device_serial': serial, 'output_dir': str(root),
+              'screens': len(graph['nodes']), 'transitions': len(graph['edges'])}
+    if target_script is not None:
+        result['script'] = str(target_script.relative_to(root))
+    return result
 
 
 def _inside(root, relative):
@@ -228,6 +278,64 @@ def inspect_exploration(exploration_dir, offset=0, limit=50):
                        for path in events[offset:offset + limit]],
             'total_screens': len(nodes), 'total_events': len(events),
             'next_offset': offset + limit if offset + limit < max(len(nodes), len(events)) else None}
+
+
+_TEXT_SUFFIXES = frozenset({'.java', '.kt', '.smali', '.xml', '.json', '.txt', '.log',
+                            '.properties', '.md', '.js', '.gradle', '.textproto', '.version', '.frag'})
+
+
+def search_analysis(analysis_dir, query, source='all', offset=0, scan_offset=0, limit=20):
+    """Search saved analyzer text with bounded output and resumable byte offsets."""
+    root = Path(analysis_dir).expanduser().resolve()
+    if not root.is_dir() or (root / '.incomplete').exists() or not (root / 'analysis.json').is_file():
+        raise Ditto2Error('analysis export is missing or incomplete')
+    if source not in ('all', 'apktool', 'jadx', 'r2flutter'):
+        raise Ditto2Error('source must be all, apktool, jadx, or r2flutter')
+    if not isinstance(query, str) or not 1 <= len(query) <= 500:
+        raise Ditto2Error('query must contain 1..500 characters')
+    if not 0 <= offset <= 10_000_000 or not 0 <= scan_offset <= 1_000_000_000 or not 1 <= limit <= 100:
+        raise Ditto2Error('offset and scan_offset must be nonnegative; limit must be 1..100')
+    files = sorted(path for path in root.rglob('*')
+                   if path.is_file() and path.suffix.lower() in _TEXT_SUFFIXES
+                   and (source == 'all' or path.relative_to(root).parts[0] == source))
+    needle = query.encode('utf-8').lower()
+    matches = []
+    scanned = 0
+    budget = 16 * 1024 * 1024
+    for index in range(offset, len(files)):
+        path = files[index]
+        if path.is_symlink() or not path.resolve().is_relative_to(root):
+            raise Ditto2Error(f'analysis contains a linked or escaping text file: {path}')
+        position = scan_offset if index == offset else 0
+        size = path.stat().st_size
+        with path.open('rb') as file:
+            while position < size:
+                file.seek(position)
+                block = file.read(min(65536, budget - scanned))
+                if not block:
+                    break
+                scanned += len(block)
+                match = block.lower().find(needle)
+                if match >= 0:
+                    at = position + match
+                    matches.append({'path': path.relative_to(root).as_posix(),
+                                    'byte_offset': at,
+                                    'excerpt': block[max(0, match - 120):match + len(needle) + 240]
+                                    .decode('utf-8', 'replace')})
+                    position = at + len(needle)
+                    if len(matches) >= limit:
+                        next_index = index if position < size else index + 1
+                        return {'matches': matches,
+                                'next_offset': next_index if next_index < len(files) else None,
+                                'next_scan_offset': position if next_index == index else 0,
+                                'scanned_bytes': scanned}
+                else:
+                    position += max(1, len(block) - len(needle) + 1)
+                if scanned >= budget:
+                    return {'matches': matches, 'next_offset': index,
+                            'next_scan_offset': position, 'scanned_bytes': scanned}
+    return {'matches': matches, 'next_offset': None, 'next_scan_offset': 0,
+            'scanned_bytes': scanned}
 
 
 def unify_evidence(apk_path, evidence_dir, confirmed_screens, confirmed_events, findings, gaps):
@@ -301,6 +409,8 @@ def unify_evidence(apk_path, evidence_dir, confirmed_screens, confirmed_events, 
     for name, tool in manifest['tools'].items():
         if tool.get('status') == 'partial':
             gaps.append(f'{name.upper()} export is partial; inspect analysis/{name}.log')
+            if tool.get('fallback', {}).get('status') == 'failed':
+                gaps.append(f'{name.upper()} fallback failed; inspect analysis/{tool["fallback"]["log"]}')
     result = {'schema_version': 2, 'apk_sha256': apk_sha, 'source_apk': str(apk),
               'static': static, 'runtime': {'source': 'DroidBot', 'path': 'exploration',
               'device_serial': graph.get('device_serial'), 'package': graph.get('app_package'),

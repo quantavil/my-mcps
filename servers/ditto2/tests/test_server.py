@@ -23,6 +23,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(finding['required']), {'claim', 'analyzer', 'path'})
         self.assertTrue(tools['explore_apk'].annotations.destructive_hint)
         self.assertTrue(tools['inspect_exploration'].annotations.read_only_hint)
+        self.assertTrue(tools['search_analysis'].annotations.read_only_hint)
 
     async def test_analyzer_does_not_block_mcp_event_loop(self):
         def analyze(*args):

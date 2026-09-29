@@ -7,11 +7,12 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core import _run, Ditto2Error, analyze_apk, explore_apk, inspect_exploration, unify_evidence
+from core import _binary, _run, Ditto2Error, analyze_apk, explore_apk, inspect_exploration, search_analysis, unify_evidence
 
 
 class Ditto2CoreTests(unittest.TestCase):
@@ -31,6 +32,33 @@ class Ditto2CoreTests(unittest.TestCase):
         result = unify_evidence(self.apk, self.root, screens, events, findings, gaps)
         self.assertEqual(result['evidence_dir'], str(self.root))
         return json.loads(Path(result['review_index']).read_text())
+
+    def test_adb_discovery_uses_sdk_when_absent_from_path(self):
+        sdk = self.root / 'sdk'
+        binary = sdk / 'platform-tools' / 'adb'
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!/bin/sh\nexit 0\n')
+        binary.chmod(0o755)
+        with patch.dict(os.environ, {'PATH': '', 'ANDROID_HOME': str(sdk)}):
+            self.assertEqual(_binary('adb'), str(binary))
+            with self.assertRaises(Ditto2Error):
+                _binary('adb', {'adb': '/missing/explicit-adb'})
+
+    def test_adb_discovery_tries_sdk_root_after_invalid_android_home(self):
+        sdk = self.root / 'sdk'
+        binary = sdk / 'platform-tools' / 'adb'
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!/bin/sh\nexit 0\n')
+        binary.chmod(0o755)
+        with patch.dict(os.environ, {'PATH': '', 'ANDROID_HOME': str(self.root / 'invalid'),
+                                    'ANDROID_SDK_ROOT': str(sdk)}):
+            self.assertEqual(_binary('adb'), str(binary))
+
+    def test_run_passes_selected_environment_to_child(self):
+        output = self.root / 'env.log'
+        _run([sys.executable, '-c', 'import os; print(os.environ["DITTO_TEST_VALUE"])'],
+             output, 5, env={**os.environ, 'DITTO_TEST_VALUE': 'selected-sdk'})
+        self.assertEqual(output.read_text().strip(), 'selected-sdk')
 
     def test_analysis_requires_arm64_flutter_snapshot(self):
         with self.assertRaisesRegex(Ditto2Error, 'lib/arm64-v8a/libapp.so'):
@@ -211,7 +239,11 @@ class Ditto2CoreTests(unittest.TestCase):
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
                 stat = Path(f'/proc/{pid}/stat')
-                if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                try:
+                    state = stat.read_text().split()[2]
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                if state == 'Z':
                     break
                 time.sleep(0.02)
             else:
@@ -263,7 +295,7 @@ class Ditto2CoreTests(unittest.TestCase):
                               'else:\n'
                               '    out = pathlib.Path(args[args.index("-o" if name == "apktool" else "-d") + 1])\n'
                               '    out.mkdir(); (out / "partial.txt").write_text("available")\n'
-                              '    if name == "jadx": print("47 class errors", file=sys.stderr); sys.exit(3)\n')
+                              '    if name == "jadx" and "fallback" not in args: print("47 class errors", file=sys.stderr); sys.exit(3)\n')
             script.chmod(0o755)
             scripts[name] = str(script)
         output = self.root / 'analysis'
@@ -271,15 +303,84 @@ class Ditto2CoreTests(unittest.TestCase):
         jadx = result['tools']['jadx']
         self.assertEqual(jadx['status'], 'partial')
         self.assertEqual(jadx['exit_code'], 3)
+        self.assertEqual(jadx['fallback'], {'status': 'ok', 'path': 'jadx/fallback', 'mode': 'fallback'})
+        self.assertEqual((output / 'jadx/fallback/partial.txt').read_text(), 'available')
         self.assertEqual((output / 'jadx/partial.txt').read_text(), 'available')
         self.assertIn('47 class errors', (output / 'jadx.log').read_text())
         self.assertFalse((output / '.incomplete').exists())
+
+    def test_failed_jadx_fallback_keeps_other_analysis_usable(self):
+        with zipfile.ZipFile(self.apk, 'a') as archive:
+            archive.writestr('lib/arm64-v8a/libapp.so', b'fake snapshot')
+        scripts = {}
+        for name in ('apktool', 'jadx', 'r2flutter'):
+            script = self.root / name
+            script.write_text('#!/usr/bin/env python3\n'
+                              'import pathlib, sys\n'
+                              'args = sys.argv[1:]\n'
+                              'name = pathlib.Path(sys.argv[0]).name\n'
+                              'if name == "r2flutter": print("{}")\n'
+                              'else:\n'
+                              '    out = pathlib.Path(args[args.index("-o" if name == "apktool" else "-d") + 1])\n'
+                              '    out.mkdir(parents=True); (out / "source.txt").write_text("available")\n'
+                              '    if name == "jadx": sys.exit(1 if "fallback" in args else 3)\n')
+            script.chmod(0o755)
+            scripts[name] = str(script)
+        output = self.root / 'analysis'
+        result = analyze_apk(self.apk, output, binaries=scripts)
+        self.assertFalse((output / '.incomplete').exists())
+        self.assertEqual(result['tools']['jadx']['status'], 'partial')
+        self.assertEqual(result['tools']['jadx']['fallback']['status'], 'failed')
+        self.assertIn('exited 1', result['tools']['jadx']['fallback']['error'])
+        self.assertTrue((output / 'jadx-fallback.log').is_file())
+
+    def test_search_analysis_finds_later_files_and_resumes_within_large_file(self):
+        analysis = self.root / 'analysis'
+        (analysis / 'jadx').mkdir(parents=True)
+        (analysis / 'r2flutter').mkdir()
+        (analysis / 'analysis.json').write_text('{}')
+        (analysis / 'jadx' / 'A.java').write_text('irrelevant')
+        (analysis / 'jadx' / 'B.java').write_text('alpha needle beta needle gamma')
+        (analysis / 'r2flutter' / 'strings.json').write_text('needle')
+        (analysis / 'r2flutter' / 'image.png').write_bytes(b'needle')
+        first = search_analysis(analysis, 'needle', limit=1)
+        self.assertEqual(first['matches'][0]['path'], 'jadx/B.java')
+        second = search_analysis(analysis, 'needle', offset=first['next_offset'],
+                                 scan_offset=first['next_scan_offset'], limit=2)
+        self.assertEqual([item['path'] for item in second['matches']],
+                         ['jadx/B.java', 'r2flutter/strings.json'])
+        self.assertIsNone(second['next_offset'])
+
+    def test_search_analysis_requires_complete_export_and_safe_source(self):
+        analysis = self.root / 'analysis'
+        analysis.mkdir()
+        (analysis / '.incomplete').write_text('failed')
+        with self.assertRaisesRegex(Ditto2Error, 'incomplete'):
+            search_analysis(analysis, 'needle')
+        (analysis / '.incomplete').unlink()
+        (analysis / 'analysis.json').write_text('{}')
+        with self.assertRaisesRegex(Ditto2Error, 'source'):
+            search_analysis(analysis, 'needle', source='outside')
+
+    def test_search_analysis_continues_after_scan_budget(self):
+        analysis = self.root / 'analysis'
+        (analysis / 'jadx').mkdir(parents=True)
+        (analysis / 'analysis.json').write_text('{}')
+        (analysis / 'jadx' / 'Large.java').write_bytes(b'x' * (17 * 1024 * 1024) + b'needle')
+        first = search_analysis(analysis, 'needle', source='jadx')
+        self.assertEqual(first['matches'], [])
+        self.assertIsNotNone(first['next_offset'])
+        second = search_analysis(analysis, 'needle', source='jadx',
+                                 offset=first['next_offset'], scan_offset=first['next_scan_offset'])
+        self.assertEqual(second['matches'][0]['byte_offset'], 17 * 1024 * 1024)
 
     def test_unification_keeps_partial_analyzer_gap_explicit(self):
         analysis, _ = self.fixture()
         manifest = json.loads((analysis / 'analysis.json').read_text())
         manifest['tools']['jadx']['status'] = 'partial'
         manifest['tools']['jadx']['exit_code'] = 3
+        manifest['tools']['jadx']['fallback'] = {'status': 'failed', 'mode': 'fallback',
+                                                'log': 'jadx-fallback.log'}
         (analysis / 'analysis.json').write_text(json.dumps(manifest))
         self.finding(analysis)
         review = self.unify(['home', 'settings'], [], [
@@ -287,6 +388,8 @@ class Ditto2CoreTests(unittest.TestCase):
              'path': 'res/values/strings.xml', 'screens': ['settings']}
         ], [])
         self.assertTrue(any('JADX' in gap and 'analysis/jadx.log' in gap for gap in review['gaps']))
+        self.assertTrue(any('fallback failed' in gap and 'analysis/jadx-fallback.log' in gap
+                            for gap in review['gaps']))
 
     def test_exploration_keeps_app_installed(self):
         script = self.root / 'droidbot'
@@ -348,6 +451,60 @@ class Ditto2CoreTests(unittest.TestCase):
                         binary=str(script), adb_binary=str(self.adb))
         self.assertFalse((self.root / 'exploration/droidbot.log').exists())
         self.assertIn('INSTALL_FAILED', (self.root / 'exploration/adb.log').read_text())
+
+    def test_exploration_rejects_missing_script_file(self):
+        with self.assertRaisesRegex(Ditto2Error, 'script file is missing'):
+            explore_apk(self.apk, self.root / 'exploration', 'emulator-5554',
+                        script_path=self.root / 'missing.json', adb_binary=str(self.adb))
+
+    def test_exploration_rejects_invalid_json_script(self):
+        broken = self.root / 'broken.json'
+        broken.write_text('{invalid-json')
+        with self.assertRaisesRegex(Ditto2Error, 'invalid JSON'):
+            explore_apk(self.apk, self.root / 'exploration', 'emulator-5554',
+                        script_path=broken, adb_binary=str(self.adb))
+
+    def test_exploration_rejects_non_dict_json_script(self):
+        array_script = self.root / 'array.json'
+        array_script.write_text('[1, 2, 3]')
+        with self.assertRaisesRegex(Ditto2Error, 'JSON object'):
+            explore_apk(self.apk, self.root / 'exploration', 'emulator-5554',
+                        script_path=array_script, adb_binary=str(self.adb))
+
+    def test_exploration_rejects_script_missing_droidbot_sections(self):
+        script = self.root / 'empty.json'
+        script.write_text('{}')
+        with self.assertRaisesRegex(Ditto2Error, 'views'):
+            explore_apk(self.apk, self.root / 'exploration', 'emulator-5554',
+                        script_path=script, adb_binary=str(self.adb))
+
+    def test_exploration_passes_script_to_droidbot_and_preserves_in_export(self):
+        script_source = self.root / 'custom_script.json'
+        script_content = {'views': {'btn': {'text': 'Settings'}}, 'states': {}, 'operations': {}, 'main': {}}
+        script_source.write_text(json.dumps(script_content))
+        script = self.root / 'droidbot'
+        script.write_text('#!/usr/bin/env python3\n'
+                          'import hashlib, json, pathlib, sys\n'
+                          'args = sys.argv[1:]\n'
+                          'assert "-script" in args\n'
+                          'script_arg = pathlib.Path(args[args.index("-script") + 1])\n'
+                          'out = pathlib.Path(args[args.index("-o") + 1])\n'
+                          'apk = pathlib.Path(args[args.index("-a") + 1])\n'
+                          'assert script_arg == out / "script.json"\n'
+                          'assert script_arg.is_file()\n'
+                          '(out / "screen.png").write_bytes(b"screen")\n'
+                          'graph = {"app_sha256": hashlib.sha256(apk.read_bytes()).hexdigest(), '
+                          '"device_serial": args[args.index("-d") + 1], '
+                          '"nodes": [{"id": "home", "image": "screen.png"}], "edges": []}\n'
+                          '(out / "utg.js").write_text("var utg = " + json.dumps(graph))\n')
+        script.chmod(0o755)
+        result = explore_apk(self.apk, self.root / 'exploration', 'emulator-5554',
+                             script_path=script_source, binary=str(script), adb_binary=str(self.adb))
+        self.assertEqual(result['screens'], 1)
+        self.assertEqual(result.get('script'), 'script.json')
+        preserved = self.root / 'exploration' / 'script.json'
+        self.assertTrue(preserved.is_file())
+        self.assertEqual(json.loads(preserved.read_text()), script_content)
 
 
 if __name__ == '__main__':
