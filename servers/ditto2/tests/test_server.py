@@ -15,6 +15,11 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
     async def test_typed_findings_and_device_effects_are_exposed(self):
         async with Client(server.mcp) as client:
             tools = {tool.name: tool for tool in await client.list_tools()}
+        self.assertIn('split_paths', tools['analyze_apk'].input_schema['properties'])
+        self.assertIn('install_mode', tools['explore_apk'].input_schema['properties'])
+        self.assertIn('static_apk_path', tools['unify_evidence'].input_schema['properties'])
+        self.assertIn('deduplicate_graph', tools)
+        self.assertIn('extract_semantic_keys', tools)
         schema = tools['unify_evidence'].input_schema
         self.assertIn('evidence_dir', schema['required'])
         finding = schema['properties']['findings']['items']
@@ -26,7 +31,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(tools['search_analysis'].annotations.read_only_hint)
 
     async def test_analyzer_does_not_block_mcp_event_loop(self):
-        def analyze(*args):
+        def analyze(*args, **kwargs):
             time.sleep(0.3)
             return {'output_dir': 'fixture'}
 
