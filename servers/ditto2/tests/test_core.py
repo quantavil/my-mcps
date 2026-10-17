@@ -12,6 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from test_inputs import sdk_output
+
 from core import _binary, _run, Ditto2Error, analyze_apk, explore_apk, inspect_exploration, search_analysis, unify_evidence
 
 
@@ -20,8 +22,11 @@ class Ditto2CoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.addCleanup(patch.stopall)
+        patch('inputs._command', side_effect=sdk_output).start()
+        patch('inputs.sdk_binary', side_effect=lambda name: name).start()
         self.adb = self.root / 'adb'
-        self.adb.write_text('#!/usr/bin/env python3\nimport sys\nprint(sys.argv[1:])\nprint("Success")\n')
+        self.adb.write_text('#!/usr/bin/env python3\nimport sys\nprint("x86_64" if "getprop" in sys.argv else sys.argv[1:])\nprint("Success" if "getprop" not in sys.argv else "")\n')
         self.adb.chmod(0o755)
         self.apk = self.root / 'original.apk'
         with zipfile.ZipFile(self.apk, 'w') as archive:
@@ -60,10 +65,11 @@ class Ditto2CoreTests(unittest.TestCase):
              output, 5, env={**os.environ, 'DITTO_TEST_VALUE': 'selected-sdk'})
         self.assertEqual(output.read_text().strip(), 'selected-sdk')
 
-    def test_analysis_requires_arm64_flutter_snapshot(self):
-        with self.assertRaisesRegex(Ditto2Error, 'lib/arm64-v8a/libapp.so'):
-            analyze_apk(self.apk, self.root / 'analysis')
-        self.assertTrue((self.root / 'analysis' / '.incomplete').exists())
+    def test_analysis_without_arm64_finalizes_failed_stage(self):
+        result = analyze_apk(self.apk, self.root / 'analysis', binaries={name: '/missing/' + name for name in ('apktool', 'jadx', 'r2flutter')})
+        self.assertEqual(result['tools']['r2flutter']['status'], 'unsupported_abi')
+        self.assertEqual(result['collection_status'], 'failed')
+        self.assertFalse((self.root / 'analysis' / '.incomplete').exists())
 
     def test_analysis_rejects_invalid_r2flutter_json_without_publishing(self):
         with zipfile.ZipFile(self.apk, 'a') as archive:
@@ -79,9 +85,10 @@ class Ditto2CoreTests(unittest.TestCase):
                               "else: pathlib.Path(args[args.index('-o' if name == 'apktool' else '-d') + 1]).mkdir()\n")
             script.chmod(0o755)
             scripts[name] = str(script)
-        with self.assertRaisesRegex(Ditto2Error, 'invalid r2Flutter JSON'):
-            analyze_apk(self.apk, self.root / 'analysis', binaries=scripts)
-        self.assertTrue((self.root / 'analysis' / '.incomplete').exists())
+        result = analyze_apk(self.apk, self.root / 'analysis', binaries=scripts)
+        self.assertEqual(result['tools']['r2flutter']['status'], 'failed')
+        self.assertEqual(result['collection_status'], 'partial')
+        self.assertFalse((self.root / 'analysis' / '.incomplete').exists())
 
     def test_exploration_rejects_graph_with_missing_screen_image(self):
         script = self.root / 'droidbot'
@@ -274,7 +281,7 @@ class Ditto2CoreTests(unittest.TestCase):
             scripts[name] = str(script)
         output = self.root / 'analysis'
         result = analyze_apk(self.apk, output, binaries=scripts)
-        self.assertEqual((output / 'apktool/asset.bin').read_bytes(), b'retained asset')
+        self.assertEqual((output / 'apktool/base/asset.bin').read_bytes(), b'retained asset')
         self.assertEqual((output / 'libapp.so').read_bytes(), b'snapshot')
         self.assertEqual(json.loads((output / 'r2flutter/header.json').read_text()), [])
         self.assertIn('diagnostic', (output / 'r2flutter/header.log').read_text())
@@ -442,7 +449,7 @@ class Ditto2CoreTests(unittest.TestCase):
         self.assertEqual((self.root / 'review.json').read_bytes(), original)
 
     def test_install_failure_prevents_exploring_a_stale_build(self):
-        self.adb.write_text('#!/usr/bin/env python3\nimport sys\nprint("INSTALL_FAILED")\nsys.exit(1)\n')
+        self.adb.write_text('#!/usr/bin/env python3\nimport sys\nprint("x86_64" if "getprop" in sys.argv else "INSTALL_FAILED")\nsys.exit(0 if "getprop" in sys.argv else 1)\n')
         script = self.root / 'droidbot'
         script.write_text('#!/usr/bin/env python3\nraise RuntimeError("must not explore")\n')
         script.chmod(0o755)
@@ -509,3 +516,24 @@ class Ditto2CoreTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+# These compatibility cases intentionally combine a legacy static export and a modern runtime receipt.
+class LegacyRuntimeDescriptorTests(unittest.TestCase):
+    setUp = Ditto2CoreTests.setUp
+    fixture = Ditto2CoreTests.fixture
+    finding = Ditto2CoreTests.finding
+    unify = Ditto2CoreTests.unify
+    def test_legacy_static_cannot_admit_unverified_runtime_splits(self):
+        analysis, exploration = self.fixture()
+        split = self.root / 'config.apk'
+        with zipfile.ZipFile(split, 'w') as archive:
+            archive.writestr('AndroidManifest.xml', '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.app" android:versionCode="1" android:versionName="1.0" split="config.en" />')
+        from inputs import describe_input
+        descriptor = describe_input(self.apk, [split])
+        (exploration / 'exploration.json').write_text(json.dumps({'schema_version': 1, 'input': descriptor, 'device_serial': 'emulator-5554'}))
+        finding = self.finding(analysis)
+        with self.assertRaisesRegex(Ditto2Error, 'legacy'):
+            self.unify(['home', 'settings'], [], [finding], [])
+        split.write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.unify(['home', 'settings'], [], [finding], [])
