@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json.schemastore.org/mcp-servers.json",
+  "servers": {
+    "filesystem": {
+      "command": "bunx",
+      "args": [
+        "@modelcontextprotocol/server-filesystem",
+        "${HOME}/Documents"
+      ],
+      "description": "Local filesystem access for documents and projects"
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "description": "Web page and URL content fetcher"
+    },
+    "memory": {
+      "command": "bunx",
+      "args": [
+        "@modelcontextprotocol/server-memory"
+      ],
+      "description": "Knowledge graph persistent memory server"
+    },
+    "github": {
+      "command": "bunx",
+      "args": [
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      },
+      "description": "GitHub repos, issues, and PR management"
+    },
+    "firecrawl": {
+      "command": "bunx",
+      "args": [
+        "firecrawl-mcp"
+      ],
+      "env": {
+        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
+      },
+      "description": "Web scraping, search, and markdown extraction via Firecrawl"
+    },
+    "context7": {
+      "command": "bunx",
+      "args": [
+        "@upstash/context7-mcp"
+      ],
+      "env": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      },
+      "description": "Up-to-date documentation and code examples via Context7"
+    },
+    "codebase-memory": {
+      "command": "bunx",
+      "args": [
+        "codebase-memory-mcp"
+      ],
+      "description": "Codebase memory knowledge graph and AST analysis"
+    },
+    "awwwards": {
+      "command": "bunx",
+      "args": [
+        "awwwards-mcp"
+      ],
+      "description": "Awwwards design inspiration: search award-winning sites, pull design DNA, build briefs, and motion/page-structure analysis"
+    },
+    "ditto-jadx": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "jadx"
+      },
+      "description": "Package-bound local JADX analysis with Ditto MCP receipt"
+    },
+    "ditto-apktool": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "apktool"
+      },
+      "description": "Package-bound local Apktool analysis with Ditto MCP receipt"
+    },
+    "ditto-r2flutter": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "r2flutter"
+      },
+      "description": "Package-bound local r2Flutter AOT analysis with Ditto MCP receipt"
+    },
+    "ditto-mobile-control": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "${MCP_ROOT}/servers/ditto-bridge",
+        "run",
+        "--locked",
+        "server.py"
+      ],
+      "env": {
+        "DITTO_ROLE": "mobile-control"
+      },
+      "description": "Local emulator controller with package-bound Ditto capture receipts"
+    },
+    "ditto2": {
+      "command": "${MCP_ROOT}/servers/ditto2/.venv/bin/python",
+      "args": [
+        "${MCP_ROOT}/servers/ditto2/server.py"
+      ],
+      "description": "Independent APK analysis, DroidBot exploration, and unified evidence"
+    },
+    "dart": {
+      "command": "dart",
+      "args": [
+        "mcp-server"
+      ],
+      "description": "Official Dart and Flutter development MCP server"
+    },
+    "blender": {
+      "command": "uvx",
+      "args": [
+        "mcp-for-blender"
+      ],
+      "description": "Blender 3D scene creation, manipulation, and modeling MCP server",
+      "enabled": false
+    }
+  }
+}

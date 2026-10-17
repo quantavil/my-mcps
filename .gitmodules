@@ -1,0 +1,6 @@
+[submodule "servers/apktool-mcp-server"]
+	path = servers/apktool-mcp-server
+	url = https://github.com/zinja-coder/apktool-mcp-server
+[submodule "servers/jadx-mcp-server"]
+	path = servers/jadx-mcp-server
+	url = https://github.com/zinja-coder/jadx-mcp-server
