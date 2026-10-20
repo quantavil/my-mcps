@@ -24,10 +24,12 @@ if ROLE == 'mobile-control':
     @mcp.tool()
     def manage_emulator(operation: Literal['start', 'start-headless', 'status', 'check', 'stop'],
                         avd: str, port: int = 5554,
-                        gpu: Literal['auto', 'software', 'host'] = 'auto',
+                        gpu: Literal['auto', 'software', 'host'] = 'host',
                         accel: Literal['auto', 'on', 'off'] = 'auto') -> str:
-        """Start/reuse or inspect a local AVD. Software GPU needs no graphics hardware.
+        """Start/reuse or inspect a local AVD.
 
+        Defaults to host GPU acceleration when available; automatically falls back
+        to software rendering if host graphics hardware is unavailable or crashes.
         Uses shared SDK discovery on Windows and Linux. Startup waits up to 300
         seconds for Android boot, not app readiness. Never clears app data.
         """

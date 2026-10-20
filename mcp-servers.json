@@ -122,7 +122,8 @@
         "server.py"
       ],
       "env": {
-        "DITTO_ROLE": "mobile-control"
+        "DITTO_ROLE": "mobile-control",
+        "DITTO_GPU": "host"
       },
       "description": "Local emulator controller with package-bound Ditto capture receipts"
     },

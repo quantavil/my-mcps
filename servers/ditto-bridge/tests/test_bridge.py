@@ -56,6 +56,15 @@ class BridgeTests(unittest.TestCase):
         self.assertLessEqual(adb.call_args.kwargs['timeout'], 0.02)
         self.assertLessEqual(read.call_args.kwargs['timeout'], 0.02)
 
+    def test_hierarchy_rejects_malformed_xml_and_wrong_root(self):
+        controller = MobileController()
+        for xml in (b'<hierarchy><node>', b'<other><hierarchy/></other>'):
+            with self.subTest(xml=xml), patch.object(controller, '_adb',
+                    return_value='UI hierchary dumped to: /sdcard/ditto-hierarchy.xml'), \
+                    patch.object(controller, '_bytes', return_value=xml):
+                with self.assertRaisesRegex(BridgeError, 'hierarchy export is invalid'):
+                    controller._hierarchy()
+
     def test_hierarchy_does_not_read_stale_file_after_failed_dump(self):
         controller = MobileController()
         with patch.object(controller, '_adb', return_value='ERROR: could not get idle state'), patch.object(
@@ -331,7 +340,9 @@ class BridgeTests(unittest.TestCase):
     def test_mobile_probe_rejects_anr_and_wrong_app_focus(self):
         controller = MobileController()
         for focus in ('Application Not Responding: com.android.systemui',
-                      'com.android.settings/.FallbackHome'):
+                      'com.android.settings/.FallbackHome',
+                      'com.example.app.debug/.MainActivity',
+                      'other.com.example.app/.MainActivity'):
             with self.subTest(focus=focus), patch.object(
                     controller, '_adb', return_value=f'mCurrentFocus=Window{{1 u0 {focus}}}'):
                 with self.assertRaises(BridgeError):

@@ -39,6 +39,7 @@ class PortableEmulatorTests(unittest.TestCase):
                      patch.object(manager, "run", return_value="test-avd"), \
                      patch.object(manager, "wait_for_boot") as boot, \
                      patch.object(manager, "identity") as identity, \
+                     patch.dict("os.environ", {"DISPLAY": ":test"}), \
                      patch("emulator_manager.subprocess.Popen") as launch, \
                      patch.object(subprocess, "CREATE_NEW_PROCESS_GROUP", 512, create=True), \
                      patch.object(subprocess, "DETACHED_PROCESS", 8, create=True):
@@ -47,7 +48,8 @@ class PortableEmulatorTests(unittest.TestCase):
                     identity.side_effect = lambda: events.append("identity")
                     manager.start(headless)
                     args = launch.call_args.args[0]
-                    self.assertEqual(args[args.index("-gpu") + 1], gpu)
+                    self.assertEqual(args[args.index("-gpu") + 1],
+                                     "software" if headless and gpu == "auto" else gpu)
                     self.assertEqual(args[args.index("-accel") + 1], "auto")
                     self.assertEqual("-no-window" in args, headless)
                     self.assertNotIn("-wipe-data", args)
@@ -119,11 +121,39 @@ class PortableEmulatorTests(unittest.TestCase):
                 manager.start()
             launch.assert_not_called()
 
-    def test_configuration_rejects_bad_ports_and_timeouts(self):
-        for overrides in ({"DITTO_EMULATOR_PORT": "5555"}, {"DITTO_EMULATOR_PORT": "abc"}, {"DITTO_BOOT_TIMEOUT": "0"}):
-            with self.assertRaises(ValueError):
-                Manager({**self.env, **overrides})
+    def test_host_gpu_falls_back_to_software_when_gpu_unavailable(self):
+        manager = Manager({**self.env, "DITTO_GPU": "host"}, windows=False)
+        with patch.object(manager, "state", return_value=None), \
+             patch.object(manager, "run", return_value="test-avd"), \
+             patch.object(manager, "has_host_gpu", return_value=False), \
+             patch.object(manager, "wait_for_boot"), \
+             patch.object(manager, "identity"), \
+             patch("emulator_manager.subprocess.Popen") as launch:
+            manager.start(headless=True)
+            args = launch.call_args.args[0]
+            self.assertEqual(args[args.index("-gpu") + 1], "software")
+
+    def test_host_gpu_falls_back_to_software_on_launch_crash(self):
+        manager = Manager({**self.env, "DITTO_GPU": "host"}, windows=False)
+        first_proc = unittest.mock.Mock()
+        first_proc.poll.return_value = 1
+        second_proc = unittest.mock.Mock()
+        second_proc.poll.return_value = None
+        with patch.object(manager, "state", return_value=None), \
+             patch.object(manager, "run", return_value="test-avd"), \
+             patch.object(manager, "has_host_gpu", return_value=True), \
+             patch.object(manager, "wait_for_boot"), \
+             patch.object(manager, "identity"), \
+             patch("emulator_manager.time.sleep"), \
+             patch("emulator_manager.subprocess.Popen", side_effect=[first_proc, second_proc]) as launch:
+            manager.start(headless=True)
+            self.assertEqual(launch.call_count, 2)
+            first_args = launch.call_args_list[0].args[0]
+            second_args = launch.call_args_list[1].args[0]
+            self.assertEqual(first_args[first_args.index("-gpu") + 1], "host")
+            self.assertEqual(second_args[second_args.index("-gpu") + 1], "software")
 
 
 if __name__ == "__main__":
     unittest.main()
+

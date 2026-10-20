@@ -122,9 +122,24 @@ native executables without a shell. Other batch launchers need a supported nativ
 executable or Java archive.
 
 The mobile MCP exposes `manage_emulator(operation, avd, port=5554, gpu="auto", accel="auto")`.
-Use `gpu="software"` without GPU hardware. It invokes the shared Python emulator
-manager in this repository. SDK discovery has one implementation in `portable.py`;
-the skill no longer ships a launcher or shell wrapper. The CLI equivalent is
+For the LocalSend trial, provision one Android 14 AOSP x86_64 image and create
+the `floww_parity` AVD:
+
+```text
+sdkmanager "system-images;android-34;default;x86_64"
+avdmanager create avd --name floww_parity --package "system-images;android-34;default;x86_64" --device pixel_7
+```
+
+The `default` image contains no Google apps or Play services. Do not install the separate
+`google_apis` image for this target. `manage_emulator` starts the existing AVD;
+it does not install system images. Headless launches resolve `gpu="auto"` to
+software rendering, avoiding display-dependent GPU initialization. Explicit
+`gpu="host"` remains opt-in. The AOSP `floww_parity` AVD boots at 1080×2400
+and 420 dpi.
+
+The tool invokes the shared Python emulator manager in this repository. SDK
+discovery has one implementation in `portable.py`; the skill no longer ships a
+launcher or shell wrapper. The CLI equivalent is
 `uv run --project servers/ditto-bridge --locked python servers/ditto-bridge/emulator_manager.py start`
 with `DITTO_AVD` set. `DITTO_GPU` and `DITTO_ACCEL` control the CLI defaults. CPU virtualization and GPU rendering are separate;
 software rendering does not make ARM-only APKs run on every x86 AVD. Choose a

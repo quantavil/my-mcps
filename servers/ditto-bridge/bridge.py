@@ -403,7 +403,11 @@ class MobileController:
         if remaining <= 0:
             raise BridgeError('UI hierarchy timed out')
         xml = self._bytes('exec-out', 'cat', '/sdcard/ditto-hierarchy.xml', timeout=remaining)
-        if b'<hierarchy' not in xml:
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as error:
+            raise BridgeError(f'emulator hierarchy export is invalid: {error}') from None
+        if root.tag != 'hierarchy':
             raise BridgeError('emulator hierarchy export is invalid')
         return xml
 
@@ -504,7 +508,8 @@ class MobileController:
         focus = match.group(1) if match else ''
         if 'Application Not Responding' in focus or 'isn\'t responding' in focus:
             raise BridgeError(f'emulator has an ANR dialog: {focus[:200]}')
-        if package_name not in focus:
+        component = re.search(r'\s([A-Za-z0-9_.]+)/[^\s}]+', focus)
+        if component is None or component.group(1) != package_name:
             raise BridgeError(f'expected {package_name} in focused window; got {focus[:200]}')
 
     def _wait_for_app_focus(self, package_name, seconds=30):

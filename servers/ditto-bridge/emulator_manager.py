@@ -84,6 +84,16 @@ class Manager:
             time.sleep(min(0.5, max(0, deadline - time.monotonic())))
         raise RuntimeError(f"Boot timed out after {self.boot_timeout}s; inspect {self.log}")
 
+    def has_host_gpu(self):
+        if self.windows:
+            return True
+        if Path("/dev/nvidia0").exists():
+            return True
+        dri = Path("/dev/dri")
+        if dri.is_dir() and any(dri.glob("renderD*")):
+            return True
+        return False
+
     def start(self, headless=False):
         self.require_avd()
         state = self.state()
@@ -95,7 +105,11 @@ class Manager:
         else:
             if self.avd not in self.run([self.emulator, "-list-avds"]).splitlines():
                 raise ValueError(f"AVD not found: {self.avd}")
-            args = [self.emulator, "-avd", self.avd, "-port", self.port, "-gpu", self.gpu, "-accel", self.accel]
+            gpu = "software" if headless and self.gpu == "auto" else self.gpu
+            if gpu == "host" and not self.has_host_gpu():
+                print("Host GPU not detected; falling back to software rendering", file=sys.stderr)
+                gpu = "software"
+            args = [self.emulator, "-avd", self.avd, "-port", self.port, "-gpu", gpu, "-accel", self.accel]
             if headless:
                 args += ["-no-window", "-no-audio", "-no-boot-anim"]
             launch_env = os.environ.copy()
@@ -120,7 +134,20 @@ class Manager:
             with self.log.open("ab") as log:
                 self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                  close_fds=True, env=launch_env, **detach)
-            print(f"Starting {self.serial} ({self.avd}, gpu={self.gpu}, accel={self.accel}); log: {self.log}")
+            print(f"Starting {self.serial} ({self.avd}, gpu={gpu}, accel={self.accel}); log: {self.log}")
+            if gpu == "host":
+                time.sleep(0.5)
+                poll_res = self.process.poll()
+                if isinstance(poll_res, int) and poll_res != 0:
+                    print(f"Host GPU launch exited with {poll_res}; falling back to software rendering", file=sys.stderr)
+                    gpu = "software"
+                    args = [self.emulator, "-avd", self.avd, "-port", self.port, "-gpu", gpu, "-accel", self.accel]
+                    if headless:
+                        args += ["-no-window", "-no-audio", "-no-boot-anim"]
+                    with self.log.open("ab") as log:
+                        self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                         close_fds=True, env=launch_env, **detach)
+                    print(f"Starting {self.serial} ({self.avd}, gpu={gpu}, accel={self.accel}); log: {self.log}")
         self.wait_for_boot()
         self.identity()
         print(f"Ready: {self.serial} (Android boot completed; assert app state before capture)")
