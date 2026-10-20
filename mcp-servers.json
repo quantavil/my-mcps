@@ -60,6 +60,14 @@
       ],
       "description": "Codebase memory knowledge graph and AST analysis"
     },
+    "awwwards": {
+      "command": "bunx",
+      "args": [
+        "awwwards-mcp"
+      ],
+      "description": "Awwwards design inspiration: search award-winning sites, pull design DNA, build briefs, and motion/page-structure analysis",
+      "enabled": false
+    },
     "dart": {
       "command": "dart",
       "args": [
