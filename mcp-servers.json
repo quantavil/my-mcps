@@ -75,6 +75,14 @@
       ],
       "description": "Official Dart and Flutter development MCP server"
     },
+    "rea": {
+      "command": "bunx",
+      "args": [
+        "rea-agents",
+        "mcp"
+      ],
+      "description": "Reverse engineering with evidence: native binaries, JS/Electron, .NET, APKs, firmware, captures, ADB devices"
+    },
     "blender": {
       "command": "uvx",
       "args": [
