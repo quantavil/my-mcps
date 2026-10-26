@@ -83,6 +83,13 @@
       ],
       "description": "Reverse engineering with evidence: native binaries, JS/Electron, .NET, APKs, firmware, captures, ADB devices"
     },
+    "icegate": {
+      "command": "bunx",
+      "args": [
+        "github:quantavil/icegate-mcp"
+      ],
+      "description": "ICEGATE (Indian Customs) public enquiries: shipping bill status, import duty, CBIC exchange rates, CODES directory, trade guides, GSTIN status"
+    },
     "blender": {
       "command": "uvx",
       "args": [
