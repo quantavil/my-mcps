@@ -6,6 +6,7 @@ import { gatewayEntry, runCheck, runDeploy } from "../index";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createGatewayServer, definitionHash, Gateway, gatewayFromManifest, searchToolDescription } from "../src/gateway";
+import { formatServerForAgent } from "../src/deployer";
 import { resolveServers, tierOf, validateTiers } from "../src/manifest";
 import { searchTools, tokenize, type ToolEntry } from "../src/search";
 
@@ -256,8 +257,25 @@ describe("Gateway against a real stdio server", () => {
     const broken = new Gateway({ bad: { command: "/nonexistent/binary" } }, {}, cacheDir);
     expect(await broken.indexAll()).toEqual({});
     expect(broken.errors.has("bad")).toBe(true);
+    // A failed server is not restarted by every search, only when asked for by name.
+    let starts = 0;
+    const connect = (broken as any).connect.bind(broken);
+    (broken as any).connect = (name: string) => (starts++, connect(name));
+    await broken.search("anything");
+    expect(starts).toBe(0);
+    await broken.search("anything", { server: "bad" });
+    expect(starts).toBe(1);
     await broken.close();
   }, 30_000);
+});
+
+describe("gateway entry", () => {
+  test("raises the Codex tool timeout only, other agents ignore it", () => {
+    const entry = gatewayEntry({ x: { tier: "gateway", command: "x" } }, "/repo")!;
+    expect(formatServerForAgent(entry, "toml").tool_timeout_sec).toBeGreaterThan(900);
+    expect(formatServerForAgent(entry, "standard").tool_timeout_sec).toBeUndefined();
+    expect(formatServerForAgent(entry, "opencode").tool_timeout_sec).toBeUndefined();
+  });
 });
 
 describe("gatewayFromManifest", () => {

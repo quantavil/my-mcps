@@ -2,11 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deployToAgents } from "./src/deployer";
-import { gatewayFromManifest } from "./src/gateway";
+import { GATEWAY_TOOL_TIMEOUT_SEC, gatewayFromManifest } from "./src/gateway";
 import { buildEnv, isEnabled, loadManifest, resolveServers, tierOf, validateTiers } from "./src/manifest";
 import { parseEnv } from "./src/secrets";
-
-export { loadManifest };
 
 export function extractReferencedEnvVars(servers: Record<string, any>): string[] {
   const vars = new Set<string>();
@@ -90,6 +88,7 @@ export function gatewayEntry(servers: Record<string, any>, rootDir: string): Rec
   return {
     command: "bun",
     args: [path.join(rootDir, "gateway.ts")],
+    toolTimeoutSec: GATEWAY_TOOL_TIMEOUT_SEC,
     description: `Gateway for ${hidden.join(", ")}`
   };
 }

@@ -44,6 +44,10 @@ export function formatServerForAgent(
   if (cleanDef.env && Object.keys(cleanDef.env).length > 0) {
     result.env = cleanDef.env;
   }
+  // Codex cuts tool calls off after 60s unless the server entry raises it.
+  if (format === "toml" && cleanDef.toolTimeoutSec) {
+    result.tool_timeout_sec = cleanDef.toolTimeoutSec;
+  }
 
   return result;
 }

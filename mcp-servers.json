@@ -5,7 +5,7 @@
       "tier": "core",
       "command": "bunx",
       "args": [
-        "firecrawl-mcp"
+        "firecrawl-mcp@latest"
       ],
       "env": {
         "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
@@ -16,7 +16,7 @@
       "tier": "core",
       "command": "bunx",
       "args": [
-        "@upstash/context7-mcp"
+        "@upstash/context7-mcp@latest"
       ],
       "env": {
         "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
@@ -35,7 +35,7 @@
       "tier": "gateway",
       "command": "uvx",
       "args": [
-        "mcp-india-stack==0.8.0"
+        "mcp-india-stack@latest"
       ],
       "description": "Indian finance and government data offline: validate GSTIN/PAN/TAN/IFSC/UPI/Aadhaar formats, HSN/SAC and pincode lookup, income tax, TDS and GST calculators, PPF/NPS/SIP projections, compliance calendar"
     },
@@ -43,7 +43,7 @@
       "tier": "gateway",
       "command": "bunx",
       "args": [
-        "rea-agents",
+        "rea-agents@latest",
         "mcp"
       ],
       "description": "Reverse engineering with evidence: native binaries, APKs and Android/ADB devices, JS/Electron bundles, .NET, firmware, packet captures, Frida and GDB"
@@ -60,7 +60,7 @@
       "tier": "gateway",
       "command": "bunx",
       "args": [
-        "codebase-memory-mcp"
+        "codebase-memory-mcp@latest"
       ],
       "description": "Code knowledge graph for large repos: symbol search, call paths, architecture overview"
     },
@@ -78,7 +78,7 @@
       "tier": "gateway",
       "command": "bunx",
       "args": [
-        "chrome-devtools-mcp@1.12.0",
+        "chrome-devtools-mcp@latest",
         "--executablePath=/usr/bin/chromium",
         "--isolated"
       ],
@@ -88,7 +88,7 @@
       "tier": "gateway",
       "command": "bunx",
       "args": [
-        "awwwards-mcp"
+        "awwwards-mcp@latest"
       ],
       "description": "Awwwards design inspiration: search award-winning sites, pull design DNA, build briefs, and motion/page-structure analysis"
     },
@@ -96,7 +96,7 @@
       "tier": "gateway",
       "command": "uvx",
       "args": [
-        "mcp-for-blender"
+        "mcp-for-blender@latest"
       ],
       "description": "Blender 3D scene creation, manipulation, and modeling MCP server",
       "enabled": false

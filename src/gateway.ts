@@ -13,7 +13,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { buildEnv, loadManifest, resolveServers } from "./manifest";
+import { buildEnv, isRemote, loadManifest, resolveServers } from "./manifest";
 import { searchTools, type ToolEntry } from "./search";
 import { substituteString } from "./secrets";
 
@@ -93,7 +93,7 @@ export class Gateway {
     const client = new Client({ name: "my-mcps-gateway", version: "1.0.0" });
     let stderrTail = "";
     let transport: StdioClientTransport | StreamableHTTPClientTransport;
-    if (typeof def.url === "string") {
+    if (isRemote(def)) {
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(def.headers ?? {})) {
         headers[k] = substituteString(String(v), this.env);
@@ -193,7 +193,9 @@ export class Gateway {
     if (options.server && !this.servers[options.server]) {
       throw new Error(`Unknown server '${options.server}'. Known: ${Object.keys(this.servers).join(", ")}`);
     }
-    await this.indexAll({ only: names });
+    // A server that failed to start this session is not retried on every search (a hung start
+    // would stall each one for CONNECT_TIMEOUT_MS); call_tool or naming it in `server` retries it.
+    await this.indexAll({ only: names.filter((n) => n === options.server || !this.errors.has(n)) });
     const entries = names.flatMap((n) => this.indexes.get(n) ?? []);
     const requested = Number(options.limit);
     const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), MAX_LIMIT) : 5;
@@ -321,6 +323,9 @@ export function createGatewayServer(gateway: Gateway): Server {
 
   return server;
 }
+
+/** Seconds an agent should allow one gateway call (Codex defaults to 60). */
+export const GATEWAY_TOOL_TIMEOUT_SEC = CALL_TIMEOUT_MS / 1000 + 60;
 
 /** Build a Gateway from the repo's manifest and .env. */
 export function gatewayFromManifest(rootDir: string, homeDir: string = os.homedir()): Gateway {

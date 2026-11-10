@@ -59,6 +59,8 @@ Gateway servers can be local (`command`/`args`) or remote (`url`, optional `head
 ./run.sh search "apk signature"   # see what an agent's search would return
 ```
 
+Packages are never pinned: `bunx`/`uvx` servers use `pkg@latest`, so each fresh start runs the newest release (`uvx` needs `@latest` or it reuses its cached copy). A server's cached tool list is refreshed on its first call in a session, so upgrades reach search without a manual `index --refresh`. Codex stops tool calls after 60s by default, so its gateway entry gets `tool_timeout_sec` to cover slow calls such as rea analyses.
+
 Promote a server to `core` only when it is used in most sessions; anything task-specific belongs behind the gateway.
 
 ### Environment & Variable Interpolation
