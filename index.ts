@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deployToAgents } from "./src/deployer";
-import { interpolateSecrets, parseEnv } from "./src/secrets";
+import { gatewayFromManifest } from "./src/gateway";
+import { buildEnv, isEnabled, loadManifest, resolveServers, tierOf, validateTiers } from "./src/manifest";
+import { parseEnv } from "./src/secrets";
+
+export { loadManifest };
 
 export function extractReferencedEnvVars(servers: Record<string, any>): string[] {
   const vars = new Set<string>();
@@ -15,19 +19,6 @@ export function extractReferencedEnvVars(servers: Record<string, any>): string[]
     }
   }
   return Array.from(vars).sort();
-}
-
-export function loadManifest(rootDir: string): { manifest: any; error?: string } {
-  const manifestPath = path.join(rootDir, "mcp-servers.json");
-  if (!fs.existsSync(manifestPath)) {
-    return { manifest: null, error: `Manifest file not found at ${manifestPath}` };
-  }
-  try {
-    const manifestRaw = fs.readFileSync(manifestPath, "utf-8");
-    return { manifest: JSON.parse(manifestRaw) };
-  } catch (err) {
-    return { manifest: null, error: `Invalid JSON in manifest file at ${manifestPath}: ${(err as Error).message}` };
-  }
 }
 
 export async function setServerEnabled(
@@ -90,6 +81,19 @@ export async function runDisable(
   return await runDeploy(rootDir, homeDir);
 }
 
+/** The agent-facing entry for the gateway, or undefined when no gateway servers are enabled. */
+export function gatewayEntry(servers: Record<string, any>, rootDir: string): Record<string, any> | undefined {
+  const hidden = Object.entries(servers)
+    .filter(([, def]) => isEnabled(def) && tierOf(def) === "gateway")
+    .map(([name]) => name);
+  if (hidden.length === 0) return undefined;
+  return {
+    command: "bun",
+    args: [path.join(rootDir, "gateway.ts")],
+    description: `Gateway for ${hidden.join(", ")}`
+  };
+}
+
 export async function runDeploy(
   rootDir: string = import.meta.dir,
   homeDir: string = os.homedir()
@@ -101,40 +105,72 @@ export async function runDeploy(
   }
 
   const allServers = manifest.servers || {};
-  const activeServers: Record<string, any> = {};
-  for (const [name, def] of Object.entries(allServers)) {
-    if ((def as any).enabled !== false) {
-      activeServers[name] = def;
-    }
-  }
+  const env = buildEnv(rootDir, homeDir);
 
-  // 1. Read .env and merge with process.env (system environment variables)
-  const envPath = path.join(rootDir, ".env");
-  let fileEnv: Record<string, string> = {};
-  if (fs.existsSync(envPath)) {
-    const envRaw = await fs.promises.readFile(envPath, "utf-8");
-    fileEnv = parseEnv(envRaw);
-  }
-  const mergedEnv: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    HOME: homeDir,
-    MCP_ROOT: rootDir,
-    ...fileEnv
-  };
-
-  // 2. Interpolate secrets cleanly
-  const { servers: resolvedServers, missing } = interpolateSecrets(activeServers, mergedEnv);
+  // Core servers go into agent configs directly. Gateway servers stay out:
+  // the gateway reads them (and their secrets) from this repo at runtime.
+  const { servers: deployed, missing } = resolveServers(allServers, "core", env);
   if (missing.length > 0) {
     console.warn(`⚠️  Warning: Missing secrets (omitted from deployed servers): ${missing.join(", ")}`);
   }
+  const gateway = gatewayEntry(allServers, rootDir);
+  if (gateway) deployed.gateway = gateway;
 
-  // 3. Deploy to agent targets
-  const reports = await deployToAgents(resolvedServers, homeDir);
+  const reports = await deployToAgents(deployed, homeDir);
   for (const report of reports) {
     console.log(report);
   }
+  if (gateway) {
+    console.log(`ℹ ${gateway.description} (run ./run.sh index after adding servers)`);
+  }
 
   return true;
+}
+
+export async function runIndex(
+  args: string[] = [],
+  rootDir: string = import.meta.dir,
+  homeDir: string = os.homedir()
+): Promise<boolean> {
+  const refresh = args.includes("--refresh");
+  const only = args.filter((a) => !a.startsWith("--"));
+  const gateway = gatewayFromManifest(rootDir, homeDir);
+  try {
+    const counts = await gateway.indexAll({ refresh, only: only.length ? only : undefined });
+    for (const [name, count] of Object.entries(counts).sort()) {
+      console.log(`✓ ${name}: ${count} tools`);
+    }
+    for (const [name, message] of gateway.errors) {
+      console.error(`✗ ${name}: ${message}`);
+    }
+    return gateway.errors.size === 0;
+  } finally {
+    await gateway.close();
+  }
+}
+
+export async function runSearch(
+  args: string[] = [],
+  rootDir: string = import.meta.dir,
+  homeDir: string = os.homedir()
+): Promise<boolean> {
+  const query = args.join(" ").trim();
+  if (!query) {
+    console.error("✗ Usage: ./run.sh search <query>");
+    return false;
+  }
+  const gateway = gatewayFromManifest(rootDir, homeDir);
+  try {
+    const hits = await gateway.search(query, { limit: 8 });
+    for (const hit of hits) {
+      const desc = hit.description.replace(/\s+/g, " ").slice(0, 100);
+      console.log(`${hit.score.toFixed(2).padStart(6)}  ${hit.server}/${hit.name}  ${desc}`);
+    }
+    if (hits.length === 0) console.log("No matches.");
+    return true;
+  } finally {
+    await gateway.close();
+  }
 }
 
 export async function runList(rootDir: string = import.meta.dir): Promise<void> {
@@ -154,12 +190,13 @@ export async function runList(rootDir: string = import.meta.dir): Promise<void> 
   console.log("─".repeat(70));
   for (const [name, def] of Object.entries(servers)) {
     const d = def as any;
-    const isEnabled = d.enabled !== false;
-    const statusTag = isEnabled ? green("[enabled]") : red("[disabled]");
-    const cmd = `${d.command} ${(d.args || []).join(" ")}`;
+    const on = isEnabled(d);
+    const statusTag = on ? green("[enabled]") : red("[disabled]");
+    const tierTag = `[${tierOf(d)}]`;
+    const cmd = d.url ? d.url : `${d.command} ${(d.args || []).join(" ")}`;
     const envKeys = d.env ? Object.keys(d.env) : [];
-    console.log(`• ${bold(name)} ${statusTag}: ${d.description || ""}`);
-    console.log(`  Command: ${cmd}`);
+    console.log(`• ${bold(name)} ${statusTag} ${tierTag}: ${d.description || ""}`);
+    console.log(`  ${d.url ? "URL" : "Command"}: ${cmd}`);
     if (envKeys.length > 0) {
       console.log(`  Secrets: ${envKeys.join(", ")}`);
     }
@@ -177,6 +214,14 @@ export async function runCheck(rootDir: string = import.meta.dir): Promise<boole
   }
 
   const servers = manifest.servers || {};
+
+  const tierProblems = validateTiers(servers);
+  if (tierProblems.length > 0) {
+    for (const problem of tierProblems) console.error(`✗ ${problem}`);
+    passed = false;
+  } else {
+    console.log("✓ Every server has a valid tier");
+  }
 
   // Validate .env.example coverage
   const envExamplePath = path.join(rootDir, ".env.example");
@@ -231,6 +276,8 @@ Commands:
   deploy          Interpolate secrets and deploy to agent targets (default)
   enable <name>   Enable an MCP server and re-deploy to agents
   disable <name>  Disable an MCP server and re-deploy to agents
+  index [names]   Cache the tool lists of gateway servers (--refresh to re-read)
+  search <query>  Search gateway tools the way an agent would
   list            Display configured servers and required secrets
   check           Validate that all required secrets are documented in .env.example
   test            Execute test suite via bun test
@@ -255,6 +302,16 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     }
     case "disable": {
       const ok = await runDisable(args[1]);
+      if (!ok) process.exit(1);
+      break;
+    }
+    case "index": {
+      const ok = await runIndex(args.slice(1));
+      if (!ok) process.exit(1);
+      break;
+    }
+    case "search": {
+      const ok = await runSearch(args.slice(1));
       if (!ok) process.exit(1);
       break;
     }

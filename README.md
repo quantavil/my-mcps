@@ -34,12 +34,35 @@ cp .env.example .env
 # 6. Run test suite
 ./run.sh test
 
-# 7. Check upstream synchronization status
+# 7. Cache gateway tool lists / try a search
+./run.sh index
+./run.sh search "flutter hot reload"
+
+# 8. Check upstream synchronization status
 ./run.sh sync
 
-# 8. Show help
+# 9. Show help
 ./run.sh help
 ```
+
+### Tiers: core and gateway
+
+Every server in `mcp-servers.json` sets `"tier"` (`./run.sh check` fails without it):
+
+- **`core`**: deployed straight into every agent config, so its tools are always loaded. Keep this for servers used across most tasks (firecrawl, context7, icegate).
+- **`gateway`**: hidden behind one `managed-gateway` server that exposes only two tools:
+  - `search_tools(query, server?, limit?)` ranks every hidden tool with BM25 and returns names, descriptions and input schemas. Its description lists each hidden server, so the agent knows when to search.
+  - `call_tool(server, tool, arguments)` runs one.
+
+Gateway servers can be local (`command`/`args`) or remote (`url`, optional `headers`, both with `${VAR}` interpolation). Their tool lists are cached in `~/.cache/my-mcps/tools/`, so searching never starts a server; a server starts on its first `call_tool` and stays up for the session. A child process gets the agent's environment plus its own declared `env`, never other `.env` secrets, and gateway secrets are never written into agent configs.
+
+```bash
+./run.sh index              # cache tool lists of all gateway servers (after adding one)
+./run.sh index --refresh rea
+./run.sh search "apk signature"   # see what an agent's search would return
+```
+
+Promote a server to `core` only when it is used in most sessions; anything task-specific belongs behind the gateway.
 
 ### Environment & Variable Interpolation
 

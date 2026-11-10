@@ -72,6 +72,7 @@ describe("runCheck", () => {
   test("returns true when .env.example documents all referenced secrets", async () => {
     const servers = {
       github: {
+        tier: "core",
         command: "npx",
         env: {
           GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
