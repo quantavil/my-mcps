@@ -255,13 +255,13 @@ Usage:
   bun index.ts [command]
 
 Commands:
-  deploy          Interpolate secrets and deploy to agent targets (default)
+  deploy          Deploy to agent configs and cache new gateway tool lists (default)
   enable <name>   Enable an MCP server and re-deploy to agents
   disable <name>  Disable an MCP server and re-deploy to agents
   index [names]   Cache the tool lists of gateway servers (--refresh to re-read)
   search <query>  Search gateway tools the way an agent would
-  list            Display configured servers and required secrets
-  check           Validate that all required secrets are documented in .env.example
+  list            Show servers with tier, status and secrets
+  check           Validate tiers and that .env.example documents every secret
   test            Execute test suite via bun test
   help            Show this help message
 `);

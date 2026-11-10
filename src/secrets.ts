@@ -45,7 +45,6 @@ export function interpolateSecrets(
   for (const [name, def] of Object.entries(servers)) {
     const serverCopy = JSON.parse(JSON.stringify(def));
 
-    // Interpolate command and args
     if (typeof serverCopy.command === "string") {
       serverCopy.command = substituteString(serverCopy.command, env, (v) => missing.add(v));
     }
@@ -55,34 +54,20 @@ export function interpolateSecrets(
       );
     }
 
-    // Interpolate environment variables
+    // Keep only fully resolved env vars; never deploy broken literal placeholders.
     if (serverCopy.env && typeof serverCopy.env === "object") {
       const resolvedEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(serverCopy.env)) {
-        if (typeof v === "string") {
-          let hasMissing = false;
-          const substituted = v.replace(/\${([A-Z0-9_]+)}/g, (match, varName) => {
-            const val = env[varName] ?? process.env[varName];
-            if (val === undefined || val === "") {
-              missing.add(varName);
-              hasMissing = true;
-              return "";
-            }
-            return val;
-          });
-
-          // Only keep valid populated env vars; never deploy broken literal placeholders
-          if (!hasMissing && substituted !== "") {
-            resolvedEnv[k] = substituted;
-          }
-        }
+        if (typeof v !== "string") continue;
+        let hasMissing = false;
+        const value = substituteString(v, env, (name) => {
+          missing.add(name);
+          hasMissing = true;
+        });
+        if (!hasMissing && value !== "") resolvedEnv[k] = value;
       }
-
-      if (Object.keys(resolvedEnv).length > 0) {
-        serverCopy.env = resolvedEnv;
-      } else {
-        delete serverCopy.env;
-      }
+      if (Object.keys(resolvedEnv).length > 0) serverCopy.env = resolvedEnv;
+      else delete serverCopy.env;
     }
 
     resolvedServers[name] = serverCopy;
