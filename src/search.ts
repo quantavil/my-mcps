@@ -37,17 +37,21 @@ interface Doc {
   tf: Map<string, number>;
   length: number;
   nameTokens: Set<string>;
+  serverTokens: Set<string>;
 }
 
+/** A query word that matches only the server (its name or description) adds this much. */
+const SERVER_BONUS = 1;
+
 /**
- * Field weights: the tool name says the most about what a tool does, then the
- * server name and description (so "flutter" finds dart tools), then the tool description.
+ * Term statistics come from the tool's own name (weighted 3x) and description. The server's name
+ * and description only add a flat bonus: they are shared by every tool of that server, so counting
+ * them as tool text would make their words useless for ranking tools against each other.
  */
 function buildDoc(entry: ToolEntry, serverDescription: string): Doc {
+  const nameTokens = tokenize(entry.name);
   const weighted: [string[], number][] = [
-    [tokenize(entry.name), 3],
-    [tokenize(entry.server), 2],
-    [tokenize(serverDescription), 1],
+    [nameTokens, 3],
     [tokenize(entry.description), 1]
   ];
   const tf = new Map<string, number>();
@@ -58,7 +62,13 @@ function buildDoc(entry: ToolEntry, serverDescription: string): Doc {
       length += weight;
     }
   }
-  return { entry, tf, length, nameTokens: new Set(tokenize(entry.name)) };
+  return {
+    entry,
+    tf,
+    length,
+    nameTokens: new Set(nameTokens),
+    serverTokens: new Set([...tokenize(entry.server), ...tokenize(serverDescription)])
+  };
 }
 
 export function searchTools(
@@ -85,6 +95,7 @@ export function searchTools(
   for (const doc of docs) {
     let score = 0;
     for (const term of terms) {
+      if (doc.serverTokens.has(term)) score += SERVER_BONUS;
       const freq = doc.tf.get(term);
       if (!freq) continue;
       const n = df.get(term) ?? 0;

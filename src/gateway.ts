@@ -142,7 +142,7 @@ export class Gateway {
     const tools: ToolEntry[] = [];
     let cursor: string | undefined;
     do {
-      const page = await client.listTools(cursor ? { cursor } : {});
+      const page = await client.listTools(cursor ? { cursor } : {}, { timeout: CONNECT_TIMEOUT_MS });
       for (const t of page.tools) {
         tools.push({
           server: name,

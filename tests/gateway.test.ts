@@ -47,6 +47,18 @@ describe("search", () => {
     expect(hits[0]?.name).toBe("hot_reload");
   });
 
+  test("a server description that names its tools does not drown out the tools' own text", () => {
+    const india = [
+      tool("india", "validate_pan", "Validate Indian PAN format"),
+      tool("india", "validate_mobile_number", "Validate an Indian mobile number"),
+      tool("india", "calculate_tds", "Calculate TDS for a section and amount"),
+      tool("india", "calculate_emi", "Calculate a loan EMI")
+    ];
+    const serverDescriptions = { india: "Validate GSTIN/PAN/mobile numbers, TDS and EMI calculators" };
+    expect(searchTools(india, "validate PAN number", { serverDescriptions })[0]?.name).toBe("validate_pan");
+    expect(searchTools(india, "TDS calculation", { serverDescriptions })[0]?.name).toBe("calculate_tds");
+  });
+
   test("exact tool name wins, limit is respected, no match returns nothing", () => {
     expect(searchTools(entries, "pub_dev_search")[0]?.name).toBe("pub_dev_search");
     expect(searchTools(entries, "search", { limit: 1 })).toHaveLength(1);

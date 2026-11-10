@@ -31,6 +31,14 @@
       ],
       "description": "ICEGATE (Indian Customs) public enquiries: shipping bill status, import duty, CBIC exchange rates, CODES directory, trade guides, GSTIN status"
     },
+    "india-stack": {
+      "tier": "gateway",
+      "command": "uvx",
+      "args": [
+        "mcp-india-stack==0.8.0"
+      ],
+      "description": "Indian finance and government data offline: validate GSTIN/PAN/TAN/IFSC/UPI/Aadhaar formats, HSN/SAC and pincode lookup, income tax, TDS and GST calculators, PPF/NPS/SIP projections, compliance calendar"
+    },
     "rea": {
       "tier": "gateway",
       "command": "bunx",
