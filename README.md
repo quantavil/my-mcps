@@ -18,7 +18,7 @@ It merges servers declared in `mcp-servers.json` into your local AI agent config
 # 1. (Optional) Set secrets in .env
 cp .env.example .env
 
-# 2. Deploy to all agent configs (default)
+# 2. Deploy to all agent configs (default); also caches tool lists of new gateway servers
 ./run.sh deploy
 
 # 3. List configured servers with enabled/disabled status
@@ -38,10 +38,7 @@ cp .env.example .env
 ./run.sh index
 ./run.sh search "flutter hot reload"
 
-# 8. Check upstream synchronization status
-./run.sh sync
-
-# 9. Show help
+# 8. Show help
 ./run.sh help
 ```
 
@@ -49,12 +46,12 @@ cp .env.example .env
 
 Every server in `mcp-servers.json` sets `"tier"` (`./run.sh check` fails without it):
 
-- **`core`**: deployed straight into every agent config, so its tools are always loaded. Keep this for servers used across most tasks (firecrawl, context7, icegate).
+- **`core`**: deployed straight into every agent config, so its tools are always loaded. Keep this for servers used across most tasks (firecrawl, context7).
 - **`gateway`**: hidden behind one `managed-gateway` server that exposes only two tools:
   - `search_tools(query, server?, limit?)` ranks every hidden tool with BM25 and returns names, descriptions and input schemas. Its description lists each hidden server, so the agent knows when to search.
   - `call_tool(server, tool, arguments)` runs one.
 
-Gateway servers can be local (`command`/`args`) or remote (`url`, optional `headers`, both with `${VAR}` interpolation). Their tool lists are cached in `~/.cache/my-mcps/tools/`, so searching never starts a server; a server starts on its first `call_tool` and stays up for the session. A child process gets the agent's environment plus its own declared `env`, never other `.env` secrets, and gateway secrets are never written into agent configs.
+Gateway servers can be local (`command`/`args`) or remote (`url`, optional `headers`, both with `${VAR}` interpolation). Their tool lists are cached in `~/.cache/my-mcps/tools/` (`deploy` fills in missing ones), so searching never starts a server. A server starts on its first `call_tool`, refreshes its cached tool list then, stays up for the session, and is started again if it exits. The routing hint (the hidden servers and what each is for) is sent both as server instructions and as the `search_tools` description, since some agents show only one of them up front. A child process gets the agent's environment plus its own declared `env`, never other `.env` secrets, and gateway secrets are never written into agent configs.
 
 ```bash
 ./run.sh index              # cache tool lists of all gateway servers (after adding one)

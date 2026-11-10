@@ -21,13 +21,22 @@ export function tokenize(text: string): string[] {
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2") // camelCase -> camel Case
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 1 && !STOP.has(t));
+    .filter((t) => t.length > 1 && !STOP.has(t))
+    .map(singular);
+}
+
+/** Crude plural folding so "rate" matches "rates" and "devices" matches "device". */
+function singular(token: string): string {
+  if (token.length <= 3 || token.endsWith("ss") || token.endsWith("us")) return token;
+  if (token.endsWith("ies")) return token.slice(0, -3) + "y";
+  return token.endsWith("s") ? token.slice(0, -1) : token;
 }
 
 interface Doc {
   entry: ToolEntry;
   tf: Map<string, number>;
   length: number;
+  nameTokens: Set<string>;
 }
 
 /**
@@ -49,7 +58,7 @@ function buildDoc(entry: ToolEntry, serverDescription: string): Doc {
       length += weight;
     }
   }
-  return { entry, tf, length };
+  return { entry, tf, length, nameTokens: new Set(tokenize(entry.name)) };
 }
 
 export function searchTools(
@@ -81,6 +90,8 @@ export function searchTools(
       const n = df.get(term) ?? 0;
       const idf = Math.log(1 + (docs.length - n + 0.5) / (n + 0.5));
       score += idf * ((freq * (k1 + 1)) / (freq + k1 * (1 - b + (b * doc.length) / avgLength)));
+      // A query word in the tool's own name is strong evidence, however common the word is.
+      if (doc.nameTokens.has(term)) score += idf;
     }
     // An exact tool name in the query always wins.
     if (q === doc.entry.name.toLowerCase()) score += 100;

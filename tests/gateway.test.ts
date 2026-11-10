@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gatewayEntry, runCheck, runDeploy } from "../index";
-import { definitionHash, Gateway, gatewayFromManifest, searchToolDescription } from "../src/gateway";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createGatewayServer, definitionHash, Gateway, gatewayFromManifest, searchToolDescription } from "../src/gateway";
 import { resolveServers, tierOf, validateTiers } from "../src/manifest";
 import { searchTools, tokenize, type ToolEntry } from "../src/search";
 
@@ -28,6 +30,10 @@ describe("search", () => {
 
   test("tokenize splits snake, kebab and camel case and drops stop words", () => {
     expect(tokenize("getFileOutline for the svelte-autofixer")).toEqual(["get", "file", "outline", "svelte", "autofixer"]);
+  });
+
+  test("singular and plural forms match", () => {
+    expect(tokenize("exchange rates entries devices class status")).toEqual(["exchange", "rate", "entry", "device", "class", "status"]);
   });
 
   test("ranks the tool that matches the task first", () => {
@@ -164,12 +170,12 @@ describe("Gateway against a real stdio server", () => {
   });
 
   test("indexes, caches, searches and calls", async () => {
-    const hits = await gateway.search("echo text back");
+    const { hits } = await gateway.search("echo text back");
     expect(hits[0]?.name).toBe("echo_text");
     expect(hits[0]?.inputSchema).toMatchObject({ required: ["text"] });
 
     const cache = JSON.parse(await fs.promises.readFile(path.join(cacheDir, "echo.json"), "utf-8"));
-    expect(cache.tools).toHaveLength(2);
+    expect(cache.tools).toHaveLength(3);
     expect(cache.hash).toBe(definitionHash(servers.echo));
 
     const result: any = await gateway.call("echo", "echo_text", { text: "hello" });
@@ -181,7 +187,7 @@ describe("Gateway against a real stdio server", () => {
     await gateway.close();
 
     const cold = new Gateway(servers, {}, cacheDir);
-    const hits = await cold.search("echo");
+    const { hits } = await cold.search("echo");
     expect(hits.length).toBeGreaterThan(0);
     expect((cold as any).clients.size).toBe(0);
     await cold.close();
@@ -191,6 +197,46 @@ describe("Gateway against a real stdio server", () => {
     // FROM_DOTENV is only in the gateway's .env view (constructor env), never in process.env.
     const result: any = await gateway.call("echo", "read_secret", {});
     expect(result.content[0].text).toBe("token=abc dotenv=none");
+  }, 30_000);
+
+  test("a server that exits is started again on the next call", async () => {
+    await gateway.call("echo", "exit_now", {});
+    await Bun.sleep(300);
+    const result: any = await gateway.call("echo", "echo_text", { text: "back" });
+    expect(result.content[0].text).toBe("back");
+  }, 30_000);
+
+  test("a failed start reports the server's stderr", async () => {
+    const broken = new Gateway(
+      { bad: { command: "bun", args: ["-e", "console.error('missing API key'); process.exit(1)"] } },
+      {},
+      cacheDir
+    );
+    await expect(broken.call("bad", "x")).rejects.toThrow("missing API key");
+    await broken.close();
+  }, 30_000);
+
+  test("MCP surface: instructions carry the routing hint, call_tool accepts JSON-string arguments", async () => {
+    const server = createGatewayServer(gateway);
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: "t", version: "0" });
+    await client.connect(clientSide);
+
+    expect(client.getInstructions()).toContain("- echo: Echo test server");
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toEqual(["search_tools", "call_tool"]);
+
+    const result: any = await client.callTool({
+      name: "call_tool",
+      arguments: { server: "echo", tool: "echo_text", arguments: JSON.stringify({ text: "as string" }) }
+    });
+    expect(result.content[0].text).toBe("as string");
+
+    const search: any = await client.callTool({ name: "search_tools", arguments: { query: "echo", limit: "two" } });
+    expect(search.isError).toBeFalsy();
+    expect(search.content[0].text).toContain("## echo / echo_text");
+    await client.close();
   }, 30_000);
 
   test("unknown servers and failed starts are reported, not thrown from indexAll", async () => {

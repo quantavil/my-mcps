@@ -24,7 +24,7 @@
       "description": "Up-to-date documentation and code examples via Context7"
     },
     "icegate": {
-      "tier": "core",
+      "tier": "gateway",
       "command": "bunx",
       "args": [
         "github:quantavil/icegate-mcp"

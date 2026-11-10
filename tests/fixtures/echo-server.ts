@@ -13,6 +13,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
     },
     {
+      name: "exit_now",
+      description: "Exit the server process, to test restarts",
+      inputSchema: { type: "object", properties: {} }
+    },
+    {
       name: "read_secret",
       description: "Report whether ECHO_TOKEN and FROM_DOTENV are visible to this process",
       inputSchema: { type: "object", properties: {} }
@@ -23,6 +28,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name === "echo_text") {
     return { content: [{ type: "text", text: String(req.params.arguments?.text ?? "") }] };
+  }
+  if (req.params.name === "exit_now") {
+    setTimeout(() => process.exit(0), 10);
+    return { content: [{ type: "text", text: "bye" }] };
   }
   if (req.params.name === "read_secret") {
     const text = `token=${process.env.ECHO_TOKEN ?? "none"} dotenv=${process.env.FROM_DOTENV ?? "none"}`;

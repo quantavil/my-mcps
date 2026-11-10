@@ -121,7 +121,7 @@ export async function runDeploy(
     console.log(report);
   }
   if (gateway) {
-    console.log(`ℹ ${gateway.description} (run ./run.sh index after adding servers)`);
+    console.log(`ℹ ${gateway.description}`);
   }
 
   return true;
@@ -161,7 +161,8 @@ export async function runSearch(
   }
   const gateway = gatewayFromManifest(rootDir, homeDir);
   try {
-    const hits = await gateway.search(query, { limit: 8 });
+    const { hits, errors } = await gateway.search(query, { limit: 8 });
+    for (const error of errors) console.error(`✗ ${error}`);
     for (const hit of hits) {
       const desc = hit.description.replace(/\s+/g, " ").slice(0, 100);
       console.log(`${hit.score.toFixed(2).padStart(6)}  ${hit.server}/${hit.name}  ${desc}`);
@@ -247,24 +248,6 @@ export async function runCheck(rootDir: string = import.meta.dir): Promise<boole
   return passed;
 }
 
-export async function runSync(rootDir: string = import.meta.dir): Promise<void> {
-  const { manifest, error } = loadManifest(rootDir);
-  if (!manifest) {
-    console.error(`✗ ${error}`);
-    return;
-  }
-
-  const servers = manifest.servers || {};
-
-  console.log("ℹ Syncing upstream MCP servers...");
-  for (const [name, def] of Object.entries(servers)) {
-    const argsStr = (def as any).args ? ` ${(def as any).args.join(" ")}` : "";
-    const cmd = `${(def as any).command}${argsStr}`;
-    console.log(`  • ${name}: upstream configured (${cmd})`);
-  }
-  console.log(`✓ Synchronized ${Object.keys(servers).length} upstream MCP server definitions`);
-}
-
 export function printHelp(): void {
   console.log(`my-mcps: Centralized MCP Server Manager
 
@@ -281,7 +264,6 @@ Commands:
   list            Display configured servers and required secrets
   check           Validate that all required secrets are documented in .env.example
   test            Execute test suite via bun test
-  sync            Display upstream MCP server configuration status
   help            Show this help message
 `);
 }
@@ -293,6 +275,9 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     case "deploy": {
       const ok = await runDeploy();
       if (!ok) process.exit(1);
+      // Cache tool lists the gateway does not know yet, so agent searches never cold-start servers.
+      // A failure here is reported but does not fail the deploy.
+      await runIndex();
       break;
     }
     case "enable": {
@@ -330,10 +315,6 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
       });
       const exitCode = await proc.exited;
       process.exit(exitCode);
-      break;
-    }
-    case "sync": {
-      await runSync();
       break;
     }
     case "help":

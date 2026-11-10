@@ -8,8 +8,7 @@ import {
   runDeploy,
   runDisable,
   runEnable,
-  runList,
-  runSync
+  runList
 } from "../index";
 
 describe("extractReferencedEnvVars", () => {
@@ -94,7 +93,7 @@ describe("runCheck", () => {
   });
 });
 
-describe("runDeploy and runSync", () => {
+describe("runDeploy", () => {
   let tempDir: string;
   let tempHome: string;
 
@@ -140,18 +139,6 @@ describe("runDeploy and runSync", () => {
     const parsedClaude = JSON.parse(rawClaude);
     expect(path.normalize(parsedClaude.mcpServers["managed-filesystem"].args[2])).toBe(path.normalize(path.join(tempHome, "docs")));
     expect(parsedClaude.mcpServers["managed-github"].env.GITHUB_TOKEN).toBe("ghp_secret_12345");
-  });
-
-  test("runSync executes without throwing", async () => {
-    const servers = {
-      fetch: { command: "uvx", args: ["mcp-server-fetch"] }
-    };
-    await fs.promises.writeFile(
-      path.join(tempDir, "mcp-servers.json"),
-      JSON.stringify({ servers })
-    );
-
-    await expect(runSync(tempDir)).resolves.toBeUndefined();
   });
 });
 

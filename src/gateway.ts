@@ -20,6 +20,7 @@ import { substituteString } from "./secrets";
 const CONNECT_TIMEOUT_MS = 120_000; // first bunx/uvx run downloads the package
 const CALL_TIMEOUT_MS = 15 * 60_000; // rea analyses and flutter builds are slow
 const MAX_LIMIT = 15;
+const STDERR_TAIL = 2000;
 
 export function defaultCacheDir(homeDir: string = os.homedir()): string {
   const base = process.env.XDG_CACHE_HOME || path.join(homeDir, ".cache");
@@ -90,7 +91,8 @@ export class Gateway {
     if (!def) throw new Error(`Unknown server '${name}'. Known: ${Object.keys(this.servers).join(", ")}`);
 
     const client = new Client({ name: "my-mcps-gateway", version: "1.0.0" });
-    let transport;
+    let stderrTail = "";
+    let transport: StdioClientTransport | StreamableHTTPClientTransport;
     if (typeof def.url === "string") {
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(def.headers ?? {})) {
@@ -105,10 +107,22 @@ export class Gateway {
         args: def.args ?? [],
         // The agent's own environment plus this server's declared env: other .env secrets stay out.
         env: { ...(process.env as Record<string, string>), ...(def.env ?? {}) },
-        stderr: "ignore" // our stdout is the MCP channel; never let children write to it
+        stderr: "pipe" // never inherit: our stdout/stderr belong to the agent
+      });
+      transport.stderr?.on("data", (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString()).slice(-STDERR_TAIL);
       });
     }
-    await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `Starting '${name}'`);
+
+    try {
+      await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, `Starting '${name}'`);
+    } catch (err) {
+      await transport.close().catch(() => {}); // do not leave a half-started child behind
+      const detail = stderrTail.trim() ? `: ${stderrTail.trim().split("\n").slice(-3).join(" | ")}` : "";
+      throw new Error(`${(err as Error).message}${detail}`);
+    }
+    // A server that exits later is started again on the next call.
+    client.onclose = () => this.clients.delete(name);
     return client;
   }
 
@@ -181,22 +195,24 @@ export class Gateway {
     }
     await this.indexAll({ only: names });
     const entries = names.flatMap((n) => this.indexes.get(n) ?? []);
-    const limit = Math.min(Math.max(options.limit ?? 5, 1), MAX_LIMIT);
-    return searchTools(entries, query, { limit, serverDescriptions: this.descriptions() });
+    const requested = Number(options.limit);
+    const limit = Number.isFinite(requested) ? Math.min(Math.max(Math.trunc(requested), 1), MAX_LIMIT) : 5;
+    const hits = searchTools(entries, query, { limit, serverDescriptions: this.descriptions() });
+    const errors = names.filter((n) => this.errors.has(n)).map((n) => `${n}: ${this.errors.get(n)}`);
+    return { hits, errors };
   }
 
   async call(server: string, tool: string, args: Record<string, unknown> = {}) {
+    const firstStart = !this.clients.has(server);
     const client = await this.client(server);
-    const result = await client.callTool({ name: tool, arguments: args }, undefined, {
+    if (firstStart) {
+      // The server is running anyway: re-read its tools so the cache follows upstream updates.
+      this.tools(server, { refresh: true }).catch(() => {});
+    }
+    return client.callTool({ name: tool, arguments: args }, undefined, {
       timeout: CALL_TIMEOUT_MS,
       resetTimeoutOnProgress: true
     });
-    // A tool the cache does not know means the server changed; refresh for the next search.
-    const known = this.indexes.get(server);
-    if (known && !known.some((t) => t.name === tool)) {
-      this.tools(server, { refresh: true }).catch(() => {});
-    }
-    return result;
   }
 
   async close(): Promise<void> {
@@ -206,7 +222,7 @@ export class Gateway {
   }
 }
 
-function formatHits(hits: Awaited<ReturnType<Gateway["search"]>>, errors: Map<string, string>): string {
+function formatHits({ hits, errors }: Awaited<ReturnType<Gateway["search"]>>): string {
   const lines: string[] = [];
   if (hits.length === 0) {
     lines.push("No matching tools. Try other words, or pass `server` to list that server's best matches.");
@@ -217,13 +233,15 @@ function formatHits(hits: Awaited<ReturnType<Gateway["search"]>>, errors: Map<st
     lines.push("Input schema: " + JSON.stringify(hit.inputSchema));
     lines.push("");
   }
-  if (errors.size > 0) {
+  if (errors.length > 0) {
     lines.push("Not searchable right now (failed to start):");
-    for (const [name, message] of errors) lines.push(`- ${name}: ${message}`);
+    for (const error of errors) lines.push(`- ${error}`);
   }
   return lines.join("\n").trim();
 }
 
+/** Routing hint: used as both the server instructions and the search_tools description,
+ * because some clients show only one of them up front (Claude Code defers tool descriptions). */
 export function searchToolDescription(descriptions: Record<string, string>): string {
   const servers = Object.entries(descriptions)
     .map(([name, desc]) => `- ${name}: ${desc}`)
@@ -244,9 +262,7 @@ export function createGatewayServer(gateway: Gateway): Server {
     { name: "my-mcps-gateway", version: "1.0.0" },
     {
       capabilities: { tools: {} },
-      instructions:
-        `Tools for ${serverNames.join(", ")} are reached through this gateway: ` +
-        "search_tools to find one, call_tool to run it."
+      instructions: searchToolDescription(descriptions)
     }
   );
 
@@ -286,14 +302,16 @@ export function createGatewayServer(gateway: Gateway): Server {
     try {
       if (request.params.name === "search_tools") {
         if (typeof args.query !== "string" || !args.query.trim()) throw new Error("query is required");
-        const hits = await gateway.search(args.query, { server: args.server, limit: args.limit });
-        return { content: [{ type: "text", text: formatHits(hits, gateway.errors) }] };
+        const result = await gateway.search(args.query, { server: args.server, limit: args.limit });
+        return { content: [{ type: "text", text: formatHits(result) }] };
       }
       if (request.params.name === "call_tool") {
         if (typeof args.server !== "string" || typeof args.tool !== "string") {
           throw new Error("server and tool are required");
         }
-        return (await gateway.call(args.server, args.tool, args.arguments ?? {})) as any;
+        // Some models send arguments as a JSON string instead of an object.
+        const toolArgs = typeof args.arguments === "string" ? JSON.parse(args.arguments) : args.arguments ?? {};
+        return (await gateway.call(args.server, args.tool, toolArgs)) as any;
       }
       throw new Error(`Unknown tool '${request.params.name}'`);
     } catch (err) {
