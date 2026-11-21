@@ -40,7 +40,7 @@
       "description": "Indian finance and government data offline: validate GSTIN/PAN/TAN/IFSC/UPI/Aadhaar formats, HSN/SAC and pincode lookup, income tax, TDS and GST calculators, PPF/NPS/SIP projections, compliance calendar"
     },
     "rea": {
-      "tier": "gateway",
+      "tier": "core",
       "command": "bunx",
       "args": [
         "rea-agents@latest",
