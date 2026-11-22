@@ -2,7 +2,6 @@
   "$schema": "https://json.schemastore.org/mcp-servers.json",
   "servers": {
     "firecrawl": {
-      "tier": "core",
       "command": "bunx",
       "args": [
         "firecrawl-mcp@latest"
@@ -13,7 +12,6 @@
       "description": "Web scraping, search, and markdown extraction via Firecrawl"
     },
     "context7": {
-      "tier": "core",
       "command": "bunx",
       "args": [
         "@upstash/context7-mcp@latest"
@@ -24,7 +22,6 @@
       "description": "Up-to-date documentation and code examples via Context7"
     },
     "icegate": {
-      "tier": "gateway",
       "command": "bunx",
       "args": [
         "github:quantavil/icegate-mcp"
@@ -32,7 +29,6 @@
       "description": "ICEGATE (Indian Customs) public enquiries: shipping bill status, import duty, CBIC exchange rates, CODES directory, trade guides, GSTIN status"
     },
     "india-stack": {
-      "tier": "gateway",
       "command": "uvx",
       "args": [
         "mcp-india-stack@latest"
@@ -40,16 +36,15 @@
       "description": "Indian finance and government data offline: validate GSTIN/PAN/TAN/IFSC/UPI/Aadhaar formats, HSN/SAC and pincode lookup, income tax, TDS and GST calculators, PPF/NPS/SIP projections, compliance calendar"
     },
     "rea": {
-      "tier": "core",
       "command": "bunx",
       "args": [
         "rea-agents@latest",
         "mcp"
       ],
+      "toolTimeoutSec": 960,
       "description": "Reverse engineering with evidence: native binaries, APKs and Android/ADB devices, JS/Electron bundles, .NET, firmware, packet captures, Frida and GDB"
     },
     "dart": {
-      "tier": "gateway",
       "command": "dart",
       "args": [
         "mcp-server"
@@ -57,7 +52,6 @@
       "description": "Dart and Flutter: analyze, pub packages, hot reload/restart, widget inspector, runtime errors of a running app"
     },
     "codebase-memory": {
-      "tier": "gateway",
       "command": "bunx",
       "args": [
         "codebase-memory-mcp@latest"
@@ -65,17 +59,14 @@
       "description": "Code knowledge graph for large repos: symbol search, call paths, architecture overview"
     },
     "svelte": {
-      "tier": "gateway",
       "url": "https://mcp.svelte.dev/mcp",
       "description": "Official Svelte 5 / SvelteKit docs and an autofixer that checks Svelte components"
     },
     "cloudflare-docs": {
-      "tier": "gateway",
       "url": "https://docs.mcp.cloudflare.com/mcp",
       "description": "Cloudflare developer docs: Workers, R2, D1, KV, Durable Objects, wrangler"
     },
     "chrome-devtools": {
-      "tier": "gateway",
       "command": "bunx",
       "args": [
         "chrome-devtools-mcp@latest",
@@ -85,7 +76,6 @@
       "description": "Debug a web page in Chromium: console messages, network requests, performance traces, screenshots"
     },
     "awwwards": {
-      "tier": "gateway",
       "command": "bunx",
       "args": [
         "awwwards-mcp@latest"
@@ -93,7 +83,6 @@
       "description": "Awwwards design inspiration: search award-winning sites, pull design DNA, build briefs, and motion/page-structure analysis"
     },
     "blender": {
-      "tier": "gateway",
       "command": "uvx",
       "args": [
         "mcp-for-blender@latest"

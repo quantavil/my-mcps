@@ -8,11 +8,25 @@ import {
   runDeploy,
   runDisable,
   runEnable,
-  runList
+  runList,
+  setServerEnabled
 } from "../index";
+import { validateServers } from "../src/manifest";
+
+describe("validateServers", () => {
+  test("flags servers that specify neither command nor url", () => {
+    const problems = validateServers({
+      okCmd: { command: "x" },
+      okUrl: { url: "https://example.com" },
+      invalid: { description: "Missing both" }
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("'invalid' must specify either 'command' or 'url'");
+  });
+});
 
 describe("extractReferencedEnvVars", () => {
-  test("extracts variables from template strings and server.env keys, ignoring HOME", () => {
+  test("extracts variables from template strings and server.env keys, ignoring HOME and MCP_ROOT", () => {
     const servers = {
       github: {
         command: "npx",
@@ -22,7 +36,7 @@ describe("extractReferencedEnvVars", () => {
       },
       custom: {
         command: "run",
-        args: ["--path", "${HOME}/files", "--key", "${CUSTOM_SECRET}"],
+        args: ["--path", "${HOME}/files", "--root", "${MCP_ROOT}", "--key", "${CUSTOM_SECRET}"],
         env: {
           STATIC_KEY: "static"
         }
@@ -31,6 +45,44 @@ describe("extractReferencedEnvVars", () => {
 
     const vars = extractReferencedEnvVars(servers);
     expect(vars).toEqual(["CUSTOM_SECRET", "GITHUB_PERSONAL_ACCESS_TOKEN"]);
+  });
+});
+
+describe("setServerEnabled", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mcp-toggle-test-"));
+    const manifest = {
+      servers: {
+        serverA: { command: "bunx", args: ["server-a"] }
+      }
+    };
+    await fs.promises.writeFile(path.join(tempDir, "mcp-servers.json"), JSON.stringify(manifest, null, 2));
+  });
+
+  afterEach(async () => {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  });
+
+  test("sets enabled: false when disabling and removes enabled when re-enabling", async () => {
+    let res = await setServerEnabled(tempDir, "serverA", false);
+    expect(res.success).toBe(true);
+
+    let manifest = JSON.parse(await fs.promises.readFile(path.join(tempDir, "mcp-servers.json"), "utf-8"));
+    expect(manifest.servers.serverA.enabled).toBe(false);
+
+    res = await setServerEnabled(tempDir, "serverA", true);
+    expect(res.success).toBe(true);
+
+    manifest = JSON.parse(await fs.promises.readFile(path.join(tempDir, "mcp-servers.json"), "utf-8"));
+    expect(manifest.servers.serverA.enabled).toBeUndefined();
+  });
+
+  test("returns error when server does not exist", async () => {
+    const res = await setServerEnabled(tempDir, "nonexistent", false);
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("not found");
   });
 });
 
@@ -71,7 +123,6 @@ describe("runCheck", () => {
   test("returns true when .env.example documents all referenced secrets", async () => {
     const servers = {
       github: {
-        tier: "core",
         command: "npx",
         env: {
           GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
@@ -90,6 +141,26 @@ describe("runCheck", () => {
 
     const passed = await runCheck(tempDir);
     expect(passed).toBe(true);
+  });
+
+  test("returns false when a server definition is missing command and url", async () => {
+    const servers = {
+      broken: {
+        description: "No command or url"
+      }
+    };
+
+    await fs.promises.writeFile(
+      path.join(tempDir, "mcp-servers.json"),
+      JSON.stringify({ servers })
+    );
+    await fs.promises.writeFile(
+      path.join(tempDir, ".env.example"),
+      ""
+    );
+
+    const passed = await runCheck(tempDir);
+    expect(passed).toBe(false);
   });
 });
 
@@ -118,6 +189,10 @@ describe("runDeploy", () => {
         command: "npx",
         env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
         description: "GitHub server"
+      },
+      remote: {
+        url: "https://example.com/mcp",
+        headers: { "X-Token": "${REMOTE_TOKEN}" }
       }
     };
 
@@ -127,7 +202,7 @@ describe("runDeploy", () => {
     );
     await fs.promises.writeFile(
       path.join(tempDir, ".env"),
-      "GITHUB_TOKEN=ghp_secret_12345\n"
+      "GITHUB_TOKEN=ghp_secret_12345\nREMOTE_TOKEN=remote_secret\n"
     );
 
     const ok = await runDeploy(tempDir, tempHome);
@@ -139,6 +214,8 @@ describe("runDeploy", () => {
     const parsedClaude = JSON.parse(rawClaude);
     expect(path.normalize(parsedClaude.mcpServers["managed-filesystem"].args[2])).toBe(path.normalize(path.join(tempHome, "docs")));
     expect(parsedClaude.mcpServers["managed-github"].env.GITHUB_TOKEN).toBe("ghp_secret_12345");
+    expect(parsedClaude.mcpServers["managed-remote"].url).toBe("https://example.com/mcp");
+    expect(parsedClaude.mcpServers["managed-remote"].headers["X-Token"]).toBe("remote_secret");
   });
 });
 
@@ -253,4 +330,3 @@ describe("runEnable and runDisable", () => {
     expect(checkOk).toBe(false);
   });
 });
-

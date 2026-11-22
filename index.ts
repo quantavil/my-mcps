@@ -2,8 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deployToAgents } from "./src/deployer";
-import { GATEWAY_TOOL_TIMEOUT_SEC, gatewayFromManifest } from "./src/gateway";
-import { buildEnv, isEnabled, loadManifest, resolveServers, tierOf, validateTiers } from "./src/manifest";
+import { buildEnv, isEnabled, loadManifest, resolveServers, validateServers } from "./src/manifest";
 import { parseEnv } from "./src/secrets";
 
 export function extractReferencedEnvVars(servers: Record<string, any>): string[] {
@@ -79,20 +78,6 @@ export async function runDisable(
   return await runDeploy(rootDir, homeDir);
 }
 
-/** The agent-facing entry for the gateway, or undefined when no gateway servers are enabled. */
-export function gatewayEntry(servers: Record<string, any>, rootDir: string): Record<string, any> | undefined {
-  const hidden = Object.entries(servers)
-    .filter(([, def]) => isEnabled(def) && tierOf(def) === "gateway")
-    .map(([name]) => name);
-  if (hidden.length === 0) return undefined;
-  return {
-    command: "bun",
-    args: [path.join(rootDir, "gateway.ts")],
-    toolTimeoutSec: GATEWAY_TOOL_TIMEOUT_SEC,
-    description: `Gateway for ${hidden.join(", ")}`
-  };
-}
-
 export async function runDeploy(
   rootDir: string = import.meta.dir,
   homeDir: string = os.homedir()
@@ -106,71 +91,17 @@ export async function runDeploy(
   const allServers = manifest.servers || {};
   const env = buildEnv(rootDir, homeDir);
 
-  // Core servers go into agent configs directly. Gateway servers stay out:
-  // the gateway reads them (and their secrets) from this repo at runtime.
-  const { servers: deployed, missing } = resolveServers(allServers, "core", env);
+  const { servers: deployed, missing } = resolveServers(allServers, env);
   if (missing.length > 0) {
     console.warn(`⚠️  Warning: Missing secrets (omitted from deployed servers): ${missing.join(", ")}`);
   }
-  const gateway = gatewayEntry(allServers, rootDir);
-  if (gateway) deployed.gateway = gateway;
 
   const reports = await deployToAgents(deployed, homeDir);
   for (const report of reports) {
     console.log(report);
   }
-  if (gateway) {
-    console.log(`ℹ ${gateway.description}`);
-  }
 
   return true;
-}
-
-export async function runIndex(
-  args: string[] = [],
-  rootDir: string = import.meta.dir,
-  homeDir: string = os.homedir()
-): Promise<boolean> {
-  const refresh = args.includes("--refresh");
-  const only = args.filter((a) => !a.startsWith("--"));
-  const gateway = gatewayFromManifest(rootDir, homeDir);
-  try {
-    const counts = await gateway.indexAll({ refresh, only: only.length ? only : undefined });
-    for (const [name, count] of Object.entries(counts).sort()) {
-      console.log(`✓ ${name}: ${count} tools`);
-    }
-    for (const [name, message] of gateway.errors) {
-      console.error(`✗ ${name}: ${message}`);
-    }
-    return gateway.errors.size === 0;
-  } finally {
-    await gateway.close();
-  }
-}
-
-export async function runSearch(
-  args: string[] = [],
-  rootDir: string = import.meta.dir,
-  homeDir: string = os.homedir()
-): Promise<boolean> {
-  const query = args.join(" ").trim();
-  if (!query) {
-    console.error("✗ Usage: ./run.sh search <query>");
-    return false;
-  }
-  const gateway = gatewayFromManifest(rootDir, homeDir);
-  try {
-    const { hits, errors } = await gateway.search(query, { limit: 8 });
-    for (const error of errors) console.error(`✗ ${error}`);
-    for (const hit of hits) {
-      const desc = hit.description.replace(/\s+/g, " ").slice(0, 100);
-      console.log(`${hit.score.toFixed(2).padStart(6)}  ${hit.server}/${hit.name}  ${desc}`);
-    }
-    if (hits.length === 0) console.log("No matches.");
-    return true;
-  } finally {
-    await gateway.close();
-  }
 }
 
 export async function runList(rootDir: string = import.meta.dir): Promise<void> {
@@ -192,10 +123,9 @@ export async function runList(rootDir: string = import.meta.dir): Promise<void> 
     const d = def as any;
     const on = isEnabled(d);
     const statusTag = on ? green("[enabled]") : red("[disabled]");
-    const tierTag = `[${tierOf(d)}]`;
     const cmd = d.url ? d.url : `${d.command} ${(d.args || []).join(" ")}`;
     const envKeys = d.env ? Object.keys(d.env) : [];
-    console.log(`• ${bold(name)} ${statusTag} ${tierTag}: ${d.description || ""}`);
+    console.log(`• ${bold(name)} ${statusTag}: ${d.description || ""}`);
     console.log(`  ${d.url ? "URL" : "Command"}: ${cmd}`);
     if (envKeys.length > 0) {
       console.log(`  Secrets: ${envKeys.join(", ")}`);
@@ -215,12 +145,12 @@ export async function runCheck(rootDir: string = import.meta.dir): Promise<boole
 
   const servers = manifest.servers || {};
 
-  const tierProblems = validateTiers(servers);
-  if (tierProblems.length > 0) {
-    for (const problem of tierProblems) console.error(`✗ ${problem}`);
+  const serverProblems = validateServers(servers);
+  if (serverProblems.length > 0) {
+    for (const problem of serverProblems) console.error(`✗ ${problem}`);
     passed = false;
   } else {
-    console.log("✓ Every server has a valid tier");
+    console.log("✓ Every server has a valid configuration");
   }
 
   // Validate .env.example coverage
@@ -255,13 +185,11 @@ Usage:
   bun index.ts [command]
 
 Commands:
-  deploy          Deploy to agent configs and cache new gateway tool lists (default)
+  deploy          Deploy all servers directly to agent configs (default)
   enable <name>   Enable an MCP server and re-deploy to agents
   disable <name>  Disable an MCP server and re-deploy to agents
-  index [names]   Cache the tool lists of gateway servers (--refresh to re-read)
-  search <query>  Search gateway tools the way an agent would
-  list            Show servers with tier, status and secrets
-  check           Validate tiers and that .env.example documents every secret
+  list            Show servers with status and secrets
+  check           Validate server configurations and that .env.example documents every secret
   test            Execute test suite via bun test
   help            Show this help message
 `);
@@ -274,9 +202,6 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     case "deploy": {
       const ok = await runDeploy();
       if (!ok) process.exit(1);
-      // Cache tool lists the gateway does not know yet, so agent searches never cold-start servers.
-      // A failure here is reported but does not fail the deploy.
-      await runIndex();
       break;
     }
     case "enable": {
@@ -286,16 +211,6 @@ export async function main(args: string[] = process.argv.slice(2)): Promise<void
     }
     case "disable": {
       const ok = await runDisable(args[1]);
-      if (!ok) process.exit(1);
-      break;
-    }
-    case "index": {
-      const ok = await runIndex(args.slice(1));
-      if (!ok) process.exit(1);
-      break;
-    }
-    case "search": {
-      const ok = await runSearch(args.slice(1));
       if (!ok) process.exit(1);
       break;
     }

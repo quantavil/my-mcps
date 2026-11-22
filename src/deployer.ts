@@ -14,24 +14,25 @@ export function formatServerForAgent(
   serverDef: Record<string, any>,
   format: "standard" | "opencode" | "toml"
 ): Record<string, any> {
-  const { description, ...cleanDef } = serverDef;
+  const { description, enabled, ...cleanDef } = serverDef;
 
+  // Remote servers (Streamable HTTP / SSE)
+  if (cleanDef.url) {
+    const remote: Record<string, any> = { url: cleanDef.url };
+    if (format === "opencode") remote.type = "remote";
+    if (cleanDef.headers && Object.keys(cleanDef.headers).length > 0) {
+      remote.headers = cleanDef.headers;
+    }
+    return remote;
+  }
+
+  // Local servers (Command / Stdio)
   if (format === "opencode") {
-    // OpenCode schema: type="local", command=[cmd, ...args], environment={...}
-    const commandList = [
-      cleanDef.command,
-      ...(Array.isArray(cleanDef.args) ? cleanDef.args : [])
-    ].filter(Boolean);
-
-    const result: Record<string, any> = {
-      type: "local",
-      command: commandList
-    };
-
+    const command = [cleanDef.command, ...(Array.isArray(cleanDef.args) ? cleanDef.args : [])].filter(Boolean);
+    const result: Record<string, any> = { type: "local", command };
     if (cleanDef.env && Object.keys(cleanDef.env).length > 0) {
       result.environment = cleanDef.env;
     }
-
     return result;
   }
 
@@ -44,7 +45,6 @@ export function formatServerForAgent(
   if (cleanDef.env && Object.keys(cleanDef.env).length > 0) {
     result.env = cleanDef.env;
   }
-  // Codex cuts tool calls off after 60s unless the server entry raises it.
   if (format === "toml" && cleanDef.toolTimeoutSec) {
     result.tool_timeout_sec = cleanDef.toolTimeoutSec;
   }

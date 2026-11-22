@@ -53,6 +53,23 @@ export function interpolateSecrets(
         substituteString(arg, env, (v) => missing.add(v))
       );
     }
+    if (typeof serverCopy.url === "string") {
+      serverCopy.url = substituteString(serverCopy.url, env, (v) => missing.add(v));
+    }
+    if (serverCopy.headers && typeof serverCopy.headers === "object") {
+      const resolvedHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(serverCopy.headers)) {
+        if (typeof v !== "string") continue;
+        let hasMissing = false;
+        const value = substituteString(v, env, (name) => {
+          missing.add(name);
+          hasMissing = true;
+        });
+        if (!hasMissing && value !== "") resolvedHeaders[k] = value;
+      }
+      if (Object.keys(resolvedHeaders).length > 0) serverCopy.headers = resolvedHeaders;
+      else delete serverCopy.headers;
+    }
 
     // Keep only fully resolved env vars; never deploy broken literal placeholders.
     if (serverCopy.env && typeof serverCopy.env === "object") {

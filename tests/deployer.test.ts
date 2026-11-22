@@ -2,10 +2,10 @@ import { expect, test, describe, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { mergeMcpConfig, getAgentTargets, deployToAgents, formatServerForAgent } from "../src/deployer";
+import { mergeMcpConfig, deployToAgents, formatServerForAgent } from "../src/deployer";
 
 describe("formatServerForAgent", () => {
-  test("formats properly for standard agents", () => {
+  test("formats properly for standard agents (stdio command)", () => {
     const server = {
       command: "bunx",
       args: ["my-server"],
@@ -18,6 +18,19 @@ describe("formatServerForAgent", () => {
     expect(formatted.args).toEqual(["my-server"]);
     expect(formatted.env).toEqual({ KEY: "value" });
     expect(formatted.description).toBeUndefined();
+  });
+
+  test("formats properly for standard agents (remote url)", () => {
+    const server = {
+      url: "https://example.com/mcp",
+      headers: { Authorization: "Bearer token" },
+      description: "Remote server"
+    };
+
+    const formatted = formatServerForAgent(server, "standard");
+    expect(formatted.url).toBe("https://example.com/mcp");
+    expect(formatted.headers).toEqual({ Authorization: "Bearer token" });
+    expect(formatted.command).toBeUndefined();
   });
 
   test("formats properly for OpenCode schema (type: local, command array, environment object)", () => {
@@ -34,6 +47,30 @@ describe("formatServerForAgent", () => {
     expect(formatted.environment).toEqual({ KEY: "value" });
     expect(formatted.env).toBeUndefined();
     expect(formatted.description).toBeUndefined();
+  });
+
+  test("formats properly for OpenCode schema (type: remote, url string, headers)", () => {
+    const server = {
+      url: "https://example.com/mcp",
+      headers: { "X-API-Key": "key" }
+    };
+
+    const formatted = formatServerForAgent(server, "opencode");
+    expect(formatted.type).toBe("remote");
+    expect(formatted.url).toBe("https://example.com/mcp");
+    expect(formatted.headers).toEqual({ "X-API-Key": "key" });
+  });
+
+  test("formats properly for Codex TOML with toolTimeoutSec", () => {
+    const server = {
+      command: "bunx",
+      args: ["slow-server"],
+      toolTimeoutSec: 960
+    };
+
+    const formatted = formatServerForAgent(server, "toml");
+    expect(formatted.command).toBe("bunx");
+    expect(formatted.tool_timeout_sec).toBe(960);
   });
 });
 
@@ -93,6 +130,10 @@ describe("deployToAgents", () => {
         command: "bunx",
         args: ["@modelcontextprotocol/server-github"],
         env: { GITHUB_PERSONAL_ACCESS_TOKEN: "secret-token" }
+      },
+      docs: {
+        url: "https://example.com/mcp",
+        description: "Remote docs"
       }
     };
 
@@ -104,12 +145,15 @@ describe("deployToAgents", () => {
     const parsedClaude = JSON.parse(await fs.promises.readFile(claudeCodePath, "utf-8"));
     expect(parsedClaude.mcpServers["managed-filesystem"].command).toBe("bunx");
     expect(parsedClaude.mcpServers["managed-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
+    expect(parsedClaude.mcpServers["managed-docs"].url).toBe("https://example.com/mcp");
 
     // 2. Verify OpenCode agent conforms to OpenCode schema
     const openCodePath = path.join(tempDir, ".config/opencode/opencode.json");
     const parsedOpenCode = JSON.parse(await fs.promises.readFile(openCodePath, "utf-8"));
     expect(parsedOpenCode.mcp["managed-filesystem"].type).toBe("local");
     expect(parsedOpenCode.mcp["managed-filesystem"].command).toEqual(["bunx", "@modelcontextprotocol/server-filesystem"]);
+    expect(parsedOpenCode.mcp["managed-docs"].type).toBe("remote");
+    expect(parsedOpenCode.mcp["managed-docs"].url).toBe("https://example.com/mcp");
 
     // 3. Verify Codex CLI TOML config
     const codexContent = await fs.promises.readFile(codexPath, "utf-8");
@@ -119,5 +163,6 @@ describe("deployToAgents", () => {
     expect(parsedCodex.mcp_servers["managed-filesystem"]).toBeDefined();
     expect(parsedCodex.mcp_servers["managed-filesystem"].command).toBe("bunx");
     expect(parsedCodex.mcp_servers["managed-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe("secret-token");
+    expect(parsedCodex.mcp_servers["managed-docs"].url).toBe("https://example.com/mcp");
   });
 });
