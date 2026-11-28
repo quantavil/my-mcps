@@ -51,13 +51,6 @@
       ],
       "description": "Dart and Flutter: analyze, pub packages, hot reload/restart, widget inspector, runtime errors of a running app"
     },
-    "codebase-memory": {
-      "command": "bunx",
-      "args": [
-        "codebase-memory-mcp@latest"
-      ],
-      "description": "Code knowledge graph for large repos: symbol search, call paths, architecture overview"
-    },
     "svelte": {
       "url": "https://mcp.svelte.dev/mcp",
       "description": "Official Svelte 5 / SvelteKit docs and an autofixer that checks Svelte components"
@@ -89,6 +82,13 @@
       ],
       "description": "Blender 3D scene creation, manipulation, and modeling MCP server",
       "enabled": false
+    },
+    "gortex": {
+      "command": "gortex",
+      "args": [
+        "mcp"
+      ],
+      "description": "Code knowledge graph across repos: symbol search, callers, blast radius, partial reads (run `gortex track <repo>` once per project)"
     }
   }
 }
